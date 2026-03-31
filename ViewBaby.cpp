@@ -26,8 +26,15 @@ static lv_obj_t * lbl_mute;
 static lv_obj_t * btn_audio_toggle;
 static lv_obj_t * lbl_audio_icon;
 
+static lv_obj_t * btn_fs;
+static lv_obj_t * lbl_fs;
+
+static lv_obj_t * lbl_fps; // Das neue FPS Label fuer den Normalmodus
+
 static lv_obj_t * debug_panel; 
 static lv_obj_t * debug_label;
+
+static lv_obj_t * fs_black_overlay; // Der schwarze Vorhang fuer das Vollbild
 
 static uint32_t s_lastBtnColor = 0; 
 static int s_lastBtnStateForText = -1;
@@ -37,16 +44,25 @@ static void btn_audio_toggle_event_cb(lv_event_t * e) {
     requestBabyStream = !requestBabyStream; 
 }
 
+static void btn_fs_event_cb(lv_event_t * e) {
+    if (!isStreamActive) return; 
+    
+    playToneI2S(800, 100, true); 
+    
+    // Vorhang zuziehen und sofort zeichnen lassen, um flackern zu vermeiden
+    lv_obj_clear_flag(fs_black_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_refr_now(NULL); 
+    
+    vidFSMode = true; 
+}
+
 static void cam_image_event_cb(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
     
-    // LOGIK-KORREKTUR: Klick auf das Bild startet/stoppt Video UND Audio
     if (code == LV_EVENT_CLICKED) {
         playToneI2S(800, 100, true); 
         
         isStreamActive = !isStreamActive; 
-        
-        // Audio synchronisiert sich mit dem Video-Start/Stopp
         requestBabyStream = isStreamActive; 
         
         if (isStreamActive) {
@@ -59,7 +75,6 @@ static void cam_image_event_cb(lv_event_t * e) {
             lv_label_set_text(lbl_cam_status, LV_SYMBOL_PAUSE " Pausiert");
         }
     } 
-    // Long Press oeffnet das Debug Overlay
     else if (code == LV_EVENT_LONG_PRESSED && audioDebugEnabled) {
         playToneI2S(1000, 100, true); 
         lv_obj_clear_flag(debug_panel, LV_OBJ_FLAG_HIDDEN);
@@ -182,6 +197,12 @@ lv_obj_t* ViewBaby::build() {
     lv_obj_set_style_bg_opa(cam_image_obj, 255, 0);
     lv_image_set_inner_align(cam_image_obj, LV_IMAGE_ALIGN_DEFAULT); 
 
+    lbl_fps = lv_label_create(scr);
+    lv_obj_set_style_text_font(lbl_fps, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_fps, lv_color_hex(0x00FF00), 0);
+    lv_obj_align_to(lbl_fps, cam_image_obj, LV_ALIGN_TOP_LEFT, 5, 5);
+    lv_obj_add_flag(lbl_fps, LV_OBJ_FLAG_HIDDEN); 
+
     lbl_play_icon = lv_label_create(cam_image_obj);
     lv_label_set_text(lbl_play_icon, LV_SYMBOL_PLAY);
     lv_obj_set_style_text_font(lbl_play_icon, &lv_font_montserrat_48, 0); 
@@ -210,20 +231,37 @@ lv_obj_t* ViewBaby::build() {
     lv_obj_add_flag(cam_touch_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE); 
     lv_obj_add_event_cb(cam_touch_overlay, cam_image_event_cb, LV_EVENT_ALL, NULL);
 
-    // KORREKTUR: Audio Icon ganz nach unten links direkt in die Ecke gequetscht (0,0 Offset)
     btn_audio_toggle = lv_btn_create(scr);
-    lv_obj_set_size(btn_audio_toggle, 40, 40); // Minimal kleiner fuer unauffaelligere Optik
-    lv_obj_align_to(btn_audio_toggle, cam_touch_overlay, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_size(btn_audio_toggle, 60, 60); 
+    lv_obj_align_to(btn_audio_toggle, cam_touch_overlay, LV_ALIGN_BOTTOM_LEFT, 5, -5);
     lv_obj_set_style_bg_color(btn_audio_toggle, lv_color_hex(0x555555), 0);
     lv_obj_set_style_bg_opa(btn_audio_toggle, 180, 0); 
-    lv_obj_set_style_radius(btn_audio_toggle, 20, 0); 
+    lv_obj_set_style_radius(btn_audio_toggle, 30, 0); 
     lv_obj_set_style_border_width(btn_audio_toggle, 0, 0);
+    lv_obj_set_style_pad_all(btn_audio_toggle, 0, 0); // Perfekte Zentrierung
     lv_obj_add_event_cb(btn_audio_toggle, btn_audio_toggle_event_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_audio_icon = lv_label_create(btn_audio_toggle);
     lv_label_set_text(lbl_audio_icon, LV_SYMBOL_MUTE);
+    lv_obj_set_style_transform_scale(lbl_audio_icon, 384, 0); 
     lv_obj_set_style_text_color(lbl_audio_icon, lv_color_white(), 0);
     lv_obj_center(lbl_audio_icon);
+
+    btn_fs = lv_btn_create(scr);
+    lv_obj_set_size(btn_fs, 60, 60); 
+    lv_obj_align_to(btn_fs, cam_touch_overlay, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
+    lv_obj_set_style_bg_color(btn_fs, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_bg_opa(btn_fs, 180, 0); 
+    lv_obj_set_style_radius(btn_fs, 30, 0); 
+    lv_obj_set_style_border_width(btn_fs, 0, 0);
+    lv_obj_set_style_pad_all(btn_fs, 0, 0); // Perfekte Zentrierung
+    lv_obj_add_event_cb(btn_fs, btn_fs_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_fs = lv_label_create(btn_fs);
+    lv_label_set_text(lbl_fs, "[ ]"); 
+    lv_obj_set_style_transform_scale(lbl_fs, 384, 0); 
+    lv_obj_set_style_text_color(lbl_fs, lv_color_white(), 0);
+    lv_obj_center(lbl_fs);
 
     debug_panel = lv_obj_create(scr);
     lv_obj_set_size(debug_panel, 280, 200);
@@ -267,11 +305,34 @@ lv_obj_t* ViewBaby::build() {
     lv_label_set_text(lbl_mute, "LADE...");
     lv_obj_center(lbl_mute);
 
+    // Der schwarze Vorhang fuer das Vollbild
+    fs_black_overlay = lv_obj_create(scr);
+    lv_obj_set_size(fs_black_overlay, 360, 360);
+    lv_obj_center(fs_black_overlay);
+    lv_obj_set_style_bg_color(fs_black_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(fs_black_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(fs_black_overlay, 0, 0);
+    lv_obj_clear_flag(fs_black_overlay, LV_OBJ_FLAG_CLICKABLE); 
+    lv_obj_add_flag(fs_black_overlay, LV_OBJ_FLAG_HIDDEN); 
+
     return scr;
 }
 
 void ViewBaby::update() {
     if (gui.getCurrentScreen() != SCREEN_BABY) return;
+
+    // Vorhang wieder oeffnen, wenn Vollbild beendet wurde
+    if (!vidFSMode && !lv_obj_has_flag(fs_black_overlay, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(fs_black_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    // FPS im Normalmodus anzeigen
+    if (showFps && isStreamActive) {
+        lv_obj_clear_flag(lbl_fps, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text_fmt(lbl_fps, "FPS: %d", currentFps);
+    } else {
+        lv_obj_add_flag(lbl_fps, LV_OBJ_FLAG_HIDDEN);
+    }
 
     int current_ui_state = 0; 
     if (!requestBabyStream) current_ui_state = 0;

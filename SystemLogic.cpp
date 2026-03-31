@@ -1,3 +1,4 @@
+#pragma GCC optimize ("O3") 
 #include "SystemLogic.h"
 #include "SharedData.h"
 #include <WiFi.h>
@@ -8,6 +9,12 @@
 #include "GuiManager.h"      
 #include "ViewBaby.h"        
 #include <JPEGDEC.h> 
+#include "esp_lcd_panel_ops.h"
+#include "Touch_CST816.h"
+#include "esp_attr.h"
+
+// Panel für DMA Video Bypass
+extern esp_lcd_panel_handle_t panel_handle;
 
 const char* mqtt_topic_pressure = "lolacatmat/sensor/pressure";
 const char* mqtt_topic_rssi = "lolacatmat/sensor/mat_rssi";
@@ -33,6 +40,17 @@ static lv_image_dsc_t cam_img_dsc[2] = {{0}, {0}};
 static uint8_t dsc_idx = 0;
 static uint8_t* jpg_bufs[2] = {nullptr, nullptr}; 
 
+// --- STATISCHE SPEICHERALLOKATION (Compile-Time) ---
+static DMA_ATTR uint16_t static_dma_memory[3][320 * 16]; 
+
+static uint16_t* dma_chunk_bufs[3] = { 
+    static_dma_memory[0], 
+    static_dma_memory[1], 
+    static_dma_memory[2] 
+};
+static uint8_t dma_chunk_idx = 0;
+// ---------------------------------------------------
+
 JPEGDEC jpeg;
 volatile uint16_t* jpeg_decode_target = nullptr;
 volatile uint16_t jpeg_decode_width = 0;
@@ -40,20 +58,87 @@ volatile uint16_t jpeg_decode_height = 0;
 
 int JPEGDraw(JPEGDRAW *pDraw) {
     if (!jpeg_decode_target) return 0;
-    for (int y = 0; y < pDraw->iHeight; y++) {
-        int absolute_y = pDraw->y + y;
-        if (absolute_y >= jpeg_decode_height) break; 
-        
-        int absolute_x = pDraw->x;
-        int draw_width = pDraw->iWidth;
-        if (absolute_x + draw_width > jpeg_decode_width) {
-            draw_width = jpeg_decode_width - absolute_x;
-        }
-        if (draw_width <= 0) continue;
+    
+    int draw_width = pDraw->iWidth;
+    if (pDraw->x + draw_width > jpeg_decode_width) draw_width = jpeg_decode_width - pDraw->x;
+    if (draw_width <= 0) return 1;
 
-        memcpy((void*)&jpeg_decode_target[absolute_y * jpeg_decode_width + absolute_x],
-               &pDraw->pPixels[y * pDraw->iWidth],
-               draw_width * 2);
+    if (vidFSMode) {
+        // --- GOD MODE (On-The-Fly DMA mit Triplet-Buffer) ---
+        dma_chunk_idx = (dma_chunk_idx + 1) % 3; 
+        uint16_t* dma_safe_buf = dma_chunk_bufs[dma_chunk_idx];
+
+        for (int y = 0; y < pDraw->iHeight; y++) {
+            int absolute_y = pDraw->y + y;
+            if (absolute_y >= jpeg_decode_height) break; 
+            
+            uint16_t *src = &pDraw->pPixels[y * pDraw->iWidth];
+            uint16_t *dst = &dma_safe_buf[y * draw_width]; 
+            
+            for(int i = 0; i < draw_width; i++) {
+                dst[i] = __builtin_bswap16(src[i]); 
+            }
+        }
+        
+        // --- BARE-METAL FPS STEMPEL ---
+        if (showFps && pDraw->y <= 12 && pDraw->x <= 30) { 
+            static const uint8_t tinyFont[10][5] = { 
+                {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1}, 
+                {7,4,7,1,7}, {7,4,7,5,7}, {7,1,2,4,4}, {7,5,7,5,7}, {7,5,7,1,7} 
+            };
+            
+            int current_fps_val = currentFps;
+            int tens = (current_fps_val / 10) % 10;
+            int ones = current_fps_val % 10;
+            const uint16_t green = 0xE007; 
+
+            int start_abs_x = 12; 
+            int start_abs_y = 2;  
+            int box_w = 11;
+            int box_h = 7;
+
+            for (int by = 0; by < box_h; by++) {
+                int abs_y = start_abs_y + by;
+                int local_y = abs_y - pDraw->y;
+
+                if (local_y >= 0 && local_y < pDraw->iHeight) {
+                    for (int bx = 0; bx < box_w; bx++) {
+                        int abs_x = start_abs_x + bx;
+                        int local_x = abs_x - pDraw->x;
+
+                        if (local_x >= 0 && local_x < draw_width) {
+                            bool is_text = false;
+
+                            if (bx >= 1 && bx < 4 && by >= 1 && by < 6) {
+                                if (tinyFont[tens][by-1] & (1 << (2 - (bx-1)))) is_text = true;
+                            }
+                            else if (bx >= 7 && bx < 10 && by >= 1 && by < 6) {
+                                if (tinyFont[ones][by-1] & (1 << (2 - (bx-7)))) is_text = true;
+                            }
+
+                            dma_safe_buf[local_y * draw_width + local_x] = is_text ? green : 0x0000;
+                        }
+                    }
+                }
+            }
+        }
+        
+        esp_lcd_panel_draw_bitmap(panel_handle, 
+                                  20 + pDraw->x, 
+                                  90 + pDraw->y, 
+                                  20 + pDraw->x + draw_width, 
+                                  90 + pDraw->y + pDraw->iHeight, 
+                                  dma_safe_buf);
+    } else {
+        // --- NORMALER BETRIEB ---
+        for (int y = 0; y < pDraw->iHeight; y++) {
+            int absolute_y = pDraw->y + y;
+            if (absolute_y >= jpeg_decode_height) break; 
+            
+            memcpy((void*)&jpeg_decode_target[absolute_y * jpeg_decode_width + pDraw->x],
+                   &pDraw->pPixels[y * pDraw->iWidth],
+                   draw_width * 2);
+        }
     }
     return 1; 
 }
@@ -310,9 +395,6 @@ void setUiStatus(const char* msg) {
     }
 }
 
-// -------------------------------------------------------------
-// STABILER MJPEG VIDEO TASK (Inklusive Drop-Puffer und vTaskDelay)
-// -------------------------------------------------------------
 #define MAX_JPEG_DOWNLOAD_SIZE 256000    
 #define MAX_PIXEL_BUF_SIZE (320 * 180 * 2) 
 
@@ -356,7 +438,7 @@ void videoTask(void * pvParameters) {
         
         if (httpCode == HTTP_CODE_OK) {
             WiFiClient * stream = http.getStreamPtr();
-            stream->setNoDelay(true); //Reduzieren von Videodelay
+            stream->setNoDelay(true); 
             setUiStatus("Stream laeuft!");
 
             char headerBuf[128];
@@ -415,9 +497,7 @@ void videoTask(void * pvParameters) {
                     if (bytesRead == frameSize) {
                         if (download_buf[0] == 0xFF && download_buf[1] == 0xD8) {
                             
-                            // =======================================================
-                            // Latenz-Dropper mit integriertem vTaskDelay(1) Watchdog-Schutz
-                            // =======================================================
+                            // --- ORIGINAL LATENZ-KILLER ---
                             if (mjpegDropThreshold == 0 && stream->available() > 0) {
                                 vTaskDelay(1); 
                                 continue; 
@@ -425,9 +505,9 @@ void videoTask(void * pvParameters) {
                                 vTaskDelay(1); 
                                 continue; 
                             }
+                            // ------------------------------
 
                             if (jpeg.openRAM(download_buf, frameSize, JPEGDraw)) {
-                                //640x320 Bild wird halbiert w=320 h=180
                                 uint16_t w = jpeg.getWidth() / 2; 
                                 uint16_t h = jpeg.getHeight() / 2; 
                                 uint32_t raw_size = w * h * 2; 
@@ -438,21 +518,38 @@ void videoTask(void * pvParameters) {
                                     jpeg_decode_width = w; 
                                     jpeg_decode_height = h; 
                                     
-                                    // Hardware Fractional Scaling: Ueberspringt Pixel für mehr Speed!
-                                    jpeg.decode(0, 0, JPEG_SCALE_HALF); 
+                                    if (vidFSMode) {
+                                        // --- TOUCH-ABFRAGE WURDE HIER ENTFERNT UND IN SYSTEMLOGIC_UPDATE VERSCHOBEN ---
+                                        if (lvgl_port_lock(portMAX_DELAY)) { 
+                                            jpeg.decode(0, 0, JPEG_SCALE_HALF); 
+                                            lvgl_port_unlock(); 
+                                        }
+                                    } 
+                                    else {
+                                        jpeg.decode(0, 0, JPEG_SCALE_HALF); 
+                                        
+                                        if (lvgl_port_lock(portMAX_DELAY)) {
+                                            lv_image_cache_drop(&cam_img_dsc[dsc_idx]);
+                                            cam_img_dsc[dsc_idx].header.magic = LV_IMAGE_HEADER_MAGIC;
+                                            cam_img_dsc[dsc_idx].header.cf = LV_COLOR_FORMAT_RGB565; 
+                                            cam_img_dsc[dsc_idx].header.w = w; 
+                                            cam_img_dsc[dsc_idx].header.h = h;
+                                            cam_img_dsc[dsc_idx].header.stride = w * 2; 
+                                            cam_img_dsc[dsc_idx].header.flags = 0;
+                                            cam_img_dsc[dsc_idx].data_size = raw_size; 
+                                            cam_img_dsc[dsc_idx].data = jpg_bufs[dsc_idx];
+                                            ViewBaby_SetImage(&cam_img_dsc[dsc_idx]); 
+                                            lvgl_port_unlock();
+                                        }
+                                    }
 
-                                    if (lvgl_port_lock(portMAX_DELAY)) {
-                                        lv_image_cache_drop(&cam_img_dsc[dsc_idx]);
-                                        cam_img_dsc[dsc_idx].header.magic = LV_IMAGE_HEADER_MAGIC;
-                                        cam_img_dsc[dsc_idx].header.cf = LV_COLOR_FORMAT_RGB565; 
-                                        cam_img_dsc[dsc_idx].header.w = w; 
-                                        cam_img_dsc[dsc_idx].header.h = h;
-                                        cam_img_dsc[dsc_idx].header.stride = w * 2; 
-                                        cam_img_dsc[dsc_idx].header.flags = 0;
-                                        cam_img_dsc[dsc_idx].data_size = raw_size; 
-                                        cam_img_dsc[dsc_idx].data = jpg_bufs[dsc_idx];
-                                        ViewBaby_SetImage(&cam_img_dsc[dsc_idx]); 
-                                        lvgl_port_unlock();
+                                    static uint32_t frameCount = 0;
+                                    static uint32_t lastFpsTime = millis();
+                                    frameCount++;
+                                    if (millis() - lastFpsTime >= 1000) {
+                                        currentFps = frameCount;
+                                        frameCount = 0;
+                                        lastFpsTime = millis();
                                     }
                                 }
                             }
@@ -530,7 +627,7 @@ void mqttSyncTask(void * pvParameters) {
         
         if (webSetupMode > 0 || screenshotModeActive) { if (webSetupMode == 1) dnsServer.processNextRequest(); server.handleClient(); if (webSetupMode > 0 && (millis() - webSetupStartTime > 300000)) { ESP.restart(); } vTaskDelay(20 / portTICK_PERIOD_MS); continue; }
         
-        if (mqttBroker.length() >= 4 && wifiEnabled && wifiStarted && WiFi.status() == WL_CONNECTED && !isSetupScanning && effPrioWifi > 0) {
+        if (mqttEnabled && mqttBroker.length() >= 4 && wifiEnabled && wifiStarted && WiFi.status() == WL_CONNECTED && !isSetupScanning && effPrioWifi > 0) {
             if (!timeSynced) { configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov"); timeSynced = true; }
             IPAddress brokerIP; if (brokerIP.fromString(mqttBroker)) { mqttClient.setServer(brokerIP, mqttPort); } else { mqttClient.setServer(mqttBroker.c_str(), mqttPort); }
             mqttClient.setCallback(mqttCallback); 
@@ -566,7 +663,12 @@ void mqttSyncTask(void * pvParameters) {
                 int syncDelay = (effPrioWifi < 30.0) ? 15000 : 10000; 
                 if (millis() - lastGetTime > syncDelay) { lastGetTime = millis(); mqttClient.publish(mqtt_topic_battery, String(batteryPercent).c_str(), true); if (connected) { mqttClient.publish(mqtt_topic_rssi, String(pClient->getRssi()).c_str(), true); } }
             }
+        } else {
+            if (mqttClient.connected()) {
+                mqttClient.disconnect();
+            }
         }
+        
         vTaskDelay(50 / portTICK_PERIOD_MS); 
     }
 }
@@ -591,10 +693,27 @@ void SystemLogic_Init() {
     mqttCameraTriggerTopic = preferences.getString("mqttCamTrig", SECRET_MQTT_CAM_TRIGGER);
     
     cameraRefreshMs = preferences.getInt("camRef", 300); 
+    showFps = preferences.getBool("showFps", false);
+    
     preferences.end();
 }
 
 void SystemLogic_Update() {
+    // --- VOLLBILD NOTAUSGANG (Unabhaengig vom WLAN) ---
+    // Diese Abfrage rettet uns, wenn das Video haengt und der User zurueck ins Menue will!
+    if (vidFSMode) {
+        Touch_Read_Data(); 
+        if (touch_data.points > 0 || alarmActive || babyAlarmActive || disconnectAlarmActive) {
+            vidFSMode = false;
+            touch_data.points = 0; 
+            if (lvgl_port_lock(portMAX_DELAY)) {
+                lv_obj_invalidate(lv_scr_act()); 
+                lvgl_port_unlock();
+            }
+        }
+    }
+    // --------------------------------------------------
+
     calcMultiplex(); if (webSetupMode > 0 || pendingWebSetupMode > 0) return; 
     if (isSetupScanning) { if (millis() - setupScanStartTime > 45000) { isSetupScanning = false; if (pBLEScan->isScanning()) pBLEScan->stop(); } else { if (!pBLEScan->isScanning() && !scanJustFinished) { if (connectTaskHandle != NULL) { return; } if (connected) { intentionalDisconnect = true; pClient->disconnect(); } if (wifiStarted) { WiFi.disconnect(true, false); wifiStarted = false; } pBLEScan->setInterval(200); pBLEScan->setWindow(100); pBLEScan->start(5, scanEndedCB, false); } } static uint32_t lastUiStringUpdate = 0; if (millis() - lastUiStringUpdate > 1000) { lastUiStringUpdate = millis(); if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(30)) == pdTRUE) { String options = ""; for(int i=0; i<scanResultCount; i++) { String m = scanResultMacs[i]; String n = scanResultNames[i]; if (n.length() > 14) n = n.substring(0, 12) + ".."; String entry = m + " | " + n + " | " + String(scanResultRssi[i]); options += entry; if (i < scanResultCount - 1) options += "\n"; } if (scanResultCount == 0) options = "Suche laeuft..."; strncpy(scanOptionsStr, options.c_str(), sizeof(scanOptionsStr) - 1); scanOptionsStr[sizeof(scanOptionsStr) - 1] = '\0'; xSemaphoreGive(bleMutex); requestRollerUpdate = true; } } if (scanJustFinished) scanJustFinished = false; return; }
     if (!wifiEnabled && wifiStarted) { WiFi.disconnect(true, false); wifiStarted = false; timeSynced = false; }

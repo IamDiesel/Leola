@@ -9,10 +9,8 @@
 
 static lv_obj_t * label_thr_val;
 static lv_obj_t * label_time_val;
-static lv_obj_t * label_ble_man_val;
 static lv_obj_t * label_mjpeg_drop_val;
 static lv_obj_t * label_cam_ref_val; 
-static lv_obj_t * slider_ble_man;
 static lv_obj_t * sl_master;
 static lv_obj_t * sl_slave;
 static lv_obj_t * lbl_master;
@@ -77,7 +75,6 @@ static void btn_back_cb(lv_event_t * e) {
     gui.switchScreen(SCREEN_DASHBOARD, LV_SCR_LOAD_ANIM_MOVE_BOTTOM); 
 }
 
-// BUGFIX: Screenshot Server Start/Stopp Trigger wieder eingefuegt
 static void btn_stop_screenshot_cb(lv_event_t * e) { 
     playToneI2S(600, 100, true); 
     lv_obj_add_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
@@ -139,7 +136,7 @@ static void slider_mjpeg_drop_event_cb(lv_event_t * e) {
     playToneI2S(1000, 50, true);
     lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
-    mjpegDropThreshold = val * 1024; // Umrechnung in Bytes
+    mjpegDropThreshold = val * 1024; 
     if (val == 0) lv_label_set_text(label_mjpeg_drop_val, "Latenz-Drop: Aggressiv (0 KB)");
     else lv_label_set_text_fmt(label_mjpeg_drop_val, "Latenz-Drop: %d KB", val);
 }
@@ -148,9 +145,7 @@ static void slider_mjpeg_drop_release_cb(lv_event_t * e) {
     preferences.putInt("mjDrop", mjpegDropThreshold); 
     preferences.end();
 }
-static void switch_ble_auto_event_cb(lv_event_t * e) { playToneI2S(800, 100, true); autoBleInterval = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("bleAuto", autoBleInterval); preferences.end(); if (autoBleInterval) { lv_obj_add_state(slider_ble_man, LV_STATE_DISABLED); lv_obj_set_style_text_color(label_ble_man_val, lv_color_hex(0x555555), 0); } else { lv_obj_clear_state(slider_ble_man, LV_STATE_DISABLED); lv_obj_set_style_text_color(label_ble_man_val, TEXT_COLOR, 0); } if (connected) { intentionalDisconnect = true; pendingBleReconnect = true; } }
-static void slider_ble_man_event_cb(lv_event_t * e) { playToneI2S(1000, 50, true); lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e); int val = lv_slider_get_value(slider); val = (val / 100) * 100; lv_slider_set_value(slider, val, LV_ANIM_OFF); manualBleIntervalMs = val; lv_label_set_text_fmt(label_ble_man_val, "Manuell: %d ms", manualBleIntervalMs); }
-static void slider_ble_man_release_cb(lv_event_t * e) { preferences.begin("catmat", false); preferences.putInt("bleManMs", manualBleIntervalMs); preferences.end(); if (connected && !autoBleInterval) { intentionalDisconnect = true; pendingBleReconnect = true; } }
+
 static void sw_wifi_cb(lv_event_t * e) { playToneI2S(800, 100, true); wifiEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("wifiEn", wifiEnabled); preferences.end(); calcMultiplex(); update_sliders_ui(); }
 static void sw_mqtt_cb(lv_event_t * e) { playToneI2S(800, 100, true); mqttEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("mqttEn", mqttEnabled); preferences.end(); }
 static void sw_mat_cb(lv_event_t * e) { playToneI2S(800, 100, true); matEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("matEn", matEnabled); preferences.end(); calcMultiplex(); update_sliders_ui(); }
@@ -241,7 +236,6 @@ lv_obj_t* ViewSettings::build() {
     lv_slider_set_value(slider_mjpeg_drop, mjpegDropThreshold / 1024, LV_ANIM_OFF); 
     lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_event_cb, LV_EVENT_VALUE_CHANGED, NULL); 
     lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_release_cb, LV_EVENT_RELEASED, NULL);
-    // --- NEUER BLOCK ENDE ---
 
     create_header(scroll_cont, LV_SYMBOL_LIST " SYSTEM & BLE");
     
@@ -257,10 +251,22 @@ lv_obj_t* ViewSettings::build() {
         preferences.begin("catmat", false); preferences.putBool("audDbg", audioDebugEnabled); preferences.end();
     }, LV_EVENT_VALUE_CHANGED, NULL);
 
+    lv_obj_t * cont_fps = create_helper_cont(scroll_cont, 40);
+    lv_obj_t * lbl_fps_title = create_text_label(cont_fps, "Video FPS Anzeige");
+    lv_obj_align(lbl_fps_title, LV_ALIGN_LEFT_MID, 10, 0);
+    lv_obj_t * sw_fps = lv_switch_create(cont_fps);
+    lv_obj_align(sw_fps, LV_ALIGN_RIGHT_MID, -10, 0);
+    if(showFps) lv_obj_add_state(sw_fps, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw_fps, [](lv_event_t* e) {
+        lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+        showFps = lv_obj_has_state(sw, LV_STATE_CHECKED);
+        Preferences prefs; prefs.begin("catmat", false); 
+        prefs.putBool("showFps", showFps); 
+        prefs.end();
+        playToneI2S(800, 100, true); 
+    }, LV_EVENT_VALUE_CHANGED, NULL);
+
     lv_obj_t * cont_dm = create_helper_cont(scroll_cont, 40); lv_obj_t * label_dark = create_text_label(cont_dm, "Dark Mode"); lv_obj_align(label_dark, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * switch_dark = lv_switch_create(cont_dm); lv_obj_align(switch_dark, LV_ALIGN_RIGHT_MID, -10, 0); if(isDarkMode) lv_obj_add_state(switch_dark, LV_STATE_CHECKED); lv_obj_add_event_cb(switch_dark, switch_dark_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_t * cont_ba = create_helper_cont(scroll_cont, 40); lv_obj_t * label_ble_auto = create_text_label(cont_ba, "BLE Intervall Auto"); lv_obj_align(label_ble_auto, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * switch_ble_auto = lv_switch_create(cont_ba); lv_obj_align(switch_ble_auto, LV_ALIGN_RIGHT_MID, -10, 0); if(autoBleInterval) lv_obj_add_state(switch_ble_auto, LV_STATE_CHECKED); lv_obj_add_event_cb(switch_ble_auto, switch_ble_auto_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    label_ble_man_val = create_text_label(scroll_cont, ""); lv_label_set_text_fmt(label_ble_man_val, "Manuell: %d ms", manualBleIntervalMs);
-    slider_ble_man = lv_slider_create(scroll_cont); lv_obj_set_size(slider_ble_man, 200, 10); lv_slider_set_range(slider_ble_man, 300, 5000); lv_slider_set_value(slider_ble_man, manualBleIntervalMs, LV_ANIM_OFF); lv_obj_add_event_cb(slider_ble_man, slider_ble_man_event_cb, LV_EVENT_VALUE_CHANGED, NULL); lv_obj_add_event_cb(slider_ble_man, slider_ble_man_release_cb, LV_EVENT_RELEASED, NULL); if(autoBleInterval) { lv_obj_add_state(slider_ble_man, LV_STATE_DISABLED); lv_obj_set_style_text_color(label_ble_man_val, lv_color_hex(0x555555), 0); }
 
     create_header(scroll_cont, LV_SYMBOL_WIFI " FUNKVERBINDUNGEN");
     lv_obj_t * cont_wlan = create_helper_cont(scroll_cont, 40); lbl_sw_wifi = create_text_label(cont_wlan, LV_SYMBOL_WIFI " WLAN"); lv_obj_align(lbl_sw_wifi, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * sw_wifi = lv_switch_create(cont_wlan); lv_obj_align(sw_wifi, LV_ALIGN_RIGHT_MID, -10, 0); if(wifiEnabled) lv_obj_add_state(sw_wifi, LV_STATE_CHECKED); lv_obj_add_event_cb(sw_wifi, sw_wifi_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -282,11 +288,14 @@ lv_obj_t* ViewSettings::build() {
     lv_obj_t * btn_info = lv_btn_create(scroll_cont); lv_obj_set_size(btn_info, 220, 40); lv_obj_set_style_bg_color(btn_info, lv_color_hex(0x222222), 0); lv_obj_add_event_cb(btn_info, easter_egg_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t * lbl_info = lv_label_create(btn_info); lv_label_set_text(lbl_info, LV_SYMBOL_LIST " INFORMATIONEN"); lv_obj_set_style_text_color(lbl_info, lv_color_hex(0x00A0FF), 0); lv_obj_center(lbl_info);
 
+    lv_obj_t * btn_restart = lv_btn_create(scroll_cont); lv_obj_set_size(btn_restart, 220, 40); lv_obj_set_style_bg_color(btn_restart, lv_color_hex(0xAA0000), 0); lv_obj_add_event_cb(btn_restart, [](lv_event_t* e){ playToneI2S(800, 100, true); ESP.restart(); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lbl_restart = create_white_label(btn_restart, LV_SYMBOL_POWER " NEUSTART"); lv_obj_center(lbl_restart);
+
     text_ble_info = create_text_label(scroll_cont, "Lade BLE Daten..."); lv_label_set_long_mode(text_ble_info, LV_LABEL_LONG_WRAP); lv_obj_set_width(text_ble_info, 220); lv_label_set_recolor(text_ble_info, true); 
     text_sys_info = create_text_label(scroll_cont, "Lade System Daten..."); lv_label_set_long_mode(text_sys_info, LV_LABEL_LONG_WRAP); lv_obj_set_width(text_sys_info, 220);
     lv_obj_t * spacer = lv_obj_create(scroll_cont); lv_obj_set_size(spacer, 10, 40); lv_obj_set_style_bg_opa(spacer, 0, 0); lv_obj_set_style_border_width(spacer, 0, 0);
 
-    // BUGFIX: QR CODE OVERLAY - Relatives Layout, so dass sich niemals etwas ueberlappt
+    // QR CODE OVERLAY
     qr_overlay = lv_obj_create(scr); 
     lv_obj_set_size(qr_overlay, 280, 280); 
     lv_obj_center(qr_overlay); 
@@ -296,7 +305,7 @@ lv_obj_t* ViewSettings::build() {
     lv_obj_add_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
     
     qr_screenshot = lv_qrcode_create(qr_overlay); 
-    lv_qrcode_set_size(qr_screenshot, 130); // Etwas verkleinert
+    lv_qrcode_set_size(qr_screenshot, 130); 
     lv_qrcode_set_dark_color(qr_screenshot, lv_color_hex(0x00A0FF)); 
     lv_qrcode_set_light_color(qr_screenshot, lv_color_hex(0x222222)); 
     lv_obj_set_style_border_width(qr_screenshot, 0, 0);
@@ -304,7 +313,6 @@ lv_obj_t* ViewSettings::build() {
     lv_obj_align(qr_screenshot, LV_ALIGN_TOP_MID, 0, 20);
     
     lbl_qr_ip = lv_label_create(qr_overlay);
-    // Relative Anordnung am QR Code: Schiebt sich automatisch nach unten
     lv_obj_align_to(lbl_qr_ip, qr_screenshot, LV_ALIGN_OUT_BOTTOM_MID, 0, 15);
     lv_obj_set_style_text_color(lbl_qr_ip, lv_color_white(), 0);
     lv_label_set_text(lbl_qr_ip, "Link: ---");
@@ -317,6 +325,7 @@ lv_obj_t* ViewSettings::build() {
     lv_obj_t * l_stop = create_white_label(btn_stop_screenshot, LV_SYMBOL_STOP " Beenden"); 
     lv_obj_center(l_stop);
 
+    // SCAN OVERLAY
     scan_overlay = lv_obj_create(scr); lv_obj_set_size(scan_overlay, lv_pct(100), lv_pct(100)); lv_obj_set_style_bg_color(scan_overlay, lv_color_hex(0x111111), 0); lv_obj_set_style_bg_opa(scan_overlay, 255, 0); lv_obj_set_style_border_width(scan_overlay, 0, 0); lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN);
     scan_spinner = lv_spinner_create(scan_overlay); lv_obj_set_size(scan_spinner, 24, 24); lv_obj_align(scan_spinner, LV_ALIGN_TOP_MID, -70, 15);
     lbl_scan_info = lv_label_create(scan_overlay); lv_label_set_text(lbl_scan_info, "Suche..."); lv_obj_set_style_text_color(lbl_scan_info, lv_color_white(), 0); lv_obj_align(lbl_scan_info, LV_ALIGN_TOP_MID, 25, 18);

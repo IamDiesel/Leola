@@ -5,6 +5,10 @@
 ******************************************************************************/
 #include "LVGL_Driver.h"
 
+// --- NEU: Wir importieren unsere Vollbild-Variable ---
+extern volatile bool vidFSMode;
+// -----------------------------------------------------
+
 uint32_t bufSize;
 lv_color_t *disp_draw_buf1;
 lv_color_t *disp_draw_buf2;
@@ -12,10 +16,10 @@ lv_color_t *disp_draw_buf2;
 static StaticSemaphore_t lvgl_mutex_buf;
 static SemaphoreHandle_t lvgl_mutex = NULL;
 
-// NEU: Globale Variable, damit der Interrupt LVGL findet
+// Globale Variable, damit der Interrupt LVGL findet
 lv_display_t * global_disp = NULL;
 
-// NEU: Das ist die Bruecke zwischen dem Hardware-Interrupt und LVGL
+// Das ist die Bruecke zwischen dem Hardware-Interrupt und LVGL
 void lvgl_flush_ready_callback(void) {
     if (global_disp != NULL) {
         lv_display_flush_ready(global_disp);
@@ -87,7 +91,14 @@ void LVGL_Loop(void *parameter)
     while(1)
     {
       lvgl_port_lock(0);
-      lv_timer_handler(); 
+      
+      // --- NEU: Der LVGL Tiefschlaf! ---
+      // Wenn wir im Hardware-Vollbild sind, darf LVGL nichts mehr zeichnen
+      if (!vidFSMode) {
+          lv_timer_handler(); 
+      }
+      // ---------------------------------
+      
       lvgl_port_unlock();
       vTaskDelay(pdMS_TO_TICKS(10));
     }

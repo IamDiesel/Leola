@@ -321,6 +321,10 @@ void GuiManager::brightnessSliderWrapper(lv_event_t * e) {
 void GuiManager::gestureEventWrapper(lv_event_t * e) { GuiManager * manager = (GuiManager *)lv_event_get_user_data(e); manager->handleGesture(e); }
 
 void GuiManager::handleGesture(lv_event_t * e) {
+    // Blockiert rigoros alle Wischgesten (inkl. Quicksettings nach unten), 
+    // solange das Hardware-Vollbild aktiv ist!
+    if (vidFSMode) return;
+    
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
     if (quickOverlay != nullptr && dir == LV_DIR_TOP) { toggleQuickOverlay(); return; }
     if (quickOverlay == nullptr) {

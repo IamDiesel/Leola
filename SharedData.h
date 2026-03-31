@@ -174,6 +174,9 @@ extern int brightnessPercent;
 extern bool mqttEnabled;
 extern volatile bool requestBabyStream;
 extern volatile int babyStreamStatus; // 0=Aus, 1=Fehler/Laden, 2=Spielt
+extern volatile bool vidFSMode; //video in fullscreen mode via DMA
+extern volatile bool showFps;
+extern volatile int currentFps;
 
 extern int mjpegDropThreshold; // <--- NEU: HIER EINFÜGEN
 

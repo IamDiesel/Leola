@@ -45,6 +45,9 @@ volatile bool isBabyArmed = false;
 
 volatile bool requestBabyStream = false;
 volatile int babyStreamStatus = 0; 
+volatile bool vidFSMode = false;
+volatile bool showFps = false; 
+volatile int currentFps = 0;
 
 String babyStreamUrl = SECRET_BABY_STREAM_URL;
 
@@ -136,7 +139,7 @@ float stdDevInterval = 0.0;
 bool displayIsOff = false;
 int brightnessPercent = 80;
 
-int mjpegDropThreshold = 0; // <--- NEU: HIER EINFÜGEN
+int mjpegDropThreshold = 0;
 
 bool audioDebugEnabled = false;
 String audioLogs[10];
@@ -304,6 +307,16 @@ void audioTask(void *pvParameters) {
                 babyStreamStatus = 1; 
                 delete aac; aac = nullptr;
                 delete httpFile; httpFile = nullptr;
+
+                // --- FIX: Stottern bei fehlerhaftem Verbindungsabbruch verhindern ---
+                // Da wir jetzt in den wartenden I2S-Fallback (else-Block) wechseln,
+                // ueberschreiben wir die restlichen Audio-Daten im Puffer mit Stille.
+                sample[0] = 0; sample[1] = 0;
+                for(int i=0; i<8192; i++) {
+                    globalAudioOut->ConsumeSample(sample);
+                    if (i % 128 == 0 && (requestBabyStream || uxQueueMessagesWaiting(audioQueue) > 0)) break;
+                }
+                // --------------------------------------------------------------------
             }
             
             if (xQueueReceive(audioQueue, &msg, 0) == pdTRUE) {} 
@@ -327,10 +340,9 @@ void audioTask(void *pvParameters) {
                         int16_t val = 0;
 
                         if (msg.soundType == 0) {
-                            // NEU: Moderner, sehr trockener und kurzer Smartphone-"Tick"
                             float currentFreq = 200.0f; 
                             float env = exp(-60.0f * ((float)i / numSamples)); 
-                            if (i > 64) env = 0.0f; // Nach ca 4 Millisekunden hart abschneiden
+                            if (i > 64) env = 0.0f; 
                             val = (int16_t)(sin(2.0f * M_PI * currentFreq * t) * env * 25000.0f);
                         }
                         else if (msg.soundType == 1) {
@@ -363,7 +375,6 @@ void audioTask(void *pvParameters) {
     }
 }
 
-// FIX: Audio Hardware synchron starten, um Bootloop (Race Condition mit SPI/LCD) zu verhindern
 void Audio_Init() {
     audioQueue = xQueueCreate(15, sizeof(AudioMsg));
     globalAudioOut = new AudioOutputKeepAlive();
