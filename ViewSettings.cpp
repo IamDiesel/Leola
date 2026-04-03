@@ -78,7 +78,7 @@ static void btn_back_cb(lv_event_t * e) {
 static void btn_stop_screenshot_cb(lv_event_t * e) { 
     playToneI2S(600, 100, true); 
     lv_obj_add_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
-    pendingScreenshotMode = 2; // Webserver hart beenden
+    pendingScreenshotMode = 2; 
 }
 
 static void easter_egg_cb(lv_event_t * e) {
@@ -99,7 +99,7 @@ static void easter_egg_cb(lv_event_t * e) {
         lv_obj_clear_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
         lv_obj_move_foreground(qr_overlay);
         
-        pendingScreenshotMode = 1; // Webserver starten
+        pendingScreenshotMode = 1; 
     } else { if (lbl) lv_label_set_text_fmt(lbl, LV_SYMBOL_LIST " INFORMATIONEN (%d/5)", click_count); }
 }
 
@@ -219,7 +219,7 @@ lv_obj_t* ViewSettings::build() {
     create_text_label(scroll_cont, "Graph Datenquelle:"); lv_obj_t * dd_graph_mode = lv_dropdown_create(scroll_cont); lv_obj_set_width(dd_graph_mode, 200); lv_dropdown_set_options(dd_graph_mode, "Druckwert\nBLE RSSI\nWLAN RSSI\nBLE Intervall\nKippy RSSI"); lv_dropdown_set_selected(dd_graph_mode, currentGraphMode); lv_obj_add_event_cb(dd_graph_mode, dd_graph_mode_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_t * btn_tara = lv_btn_create(scroll_cont); lv_obj_set_size(btn_tara, 200, 40); lv_obj_set_style_bg_color(btn_tara, lv_color_hex(0x333333), 0); lv_obj_add_event_cb(btn_tara, btn_tara_event_cb, LV_EVENT_CLICKED, NULL); lv_obj_t * label_tara = create_white_label(btn_tara, "TARA KALIBRIEREN"); lv_obj_center(label_tara);
 
-    create_header(scroll_cont, LV_SYMBOL_VIDEO " BILDABRUF (BABY-MONITOR)");
+    create_header(scroll_cont, LV_SYMBOL_VIDEO " BABY-MONITOR & AUDIO");
     label_cam_ref_val = create_text_label(scroll_cont, ""); 
     if (cameraRefreshMs < 1000) lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d ms", cameraRefreshMs);
     else lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d Sek", cameraRefreshMs / 1000);
@@ -236,6 +236,37 @@ lv_obj_t* ViewSettings::build() {
     lv_slider_set_value(slider_mjpeg_drop, mjpegDropThreshold / 1024, LV_ANIM_OFF); 
     lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_event_cb, LV_EVENT_VALUE_CHANGED, NULL); 
     lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_release_cb, LV_EVENT_RELEASED, NULL);
+
+    // Audio Format Schalter
+    lv_obj_t * cont_audio_fmt = create_helper_cont(scroll_cont, 40);
+    lv_obj_t * label_audio_fmt = create_text_label(cont_audio_fmt, "Audio: PCM (WAV)");
+    lv_obj_align(label_audio_fmt, LV_ALIGN_LEFT_MID, 10, 0);
+    lv_obj_t * switch_audio_fmt = lv_switch_create(cont_audio_fmt);
+    lv_obj_align(switch_audio_fmt, LV_ALIGN_RIGHT_MID, -10, 0);
+    if(usePcmAudio) lv_obj_add_state(switch_audio_fmt, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(switch_audio_fmt, [](lv_event_t* e) {
+        playToneI2S(800, 100, true);
+        usePcmAudio = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+        Preferences prefs; prefs.begin("catmat", false);
+        prefs.putBool("usePcm", usePcmAudio);
+        prefs.end();
+    }, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // --- NEU: Der Hardware-Schalter fuer den Kamera Hack ---
+    lv_obj_t * cont_cam_hack = create_helper_cont(scroll_cont, 40);
+    lv_obj_t * label_cam_hack = create_text_label(cont_cam_hack, "Kamera API Hack (320x240)");
+    lv_obj_align(label_cam_hack, LV_ALIGN_LEFT_MID, 10, 0);
+    lv_obj_t * switch_cam_hack = lv_switch_create(cont_cam_hack);
+    lv_obj_align(switch_cam_hack, LV_ALIGN_RIGHT_MID, -10, 0);
+    if(useBabyCamHack) lv_obj_add_state(switch_cam_hack, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(switch_cam_hack, [](lv_event_t* e) {
+        playToneI2S(800, 100, true);
+        useBabyCamHack = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+        Preferences prefs; prefs.begin("catmat", false);
+        prefs.putBool("camHack", useBabyCamHack);
+        prefs.end();
+    }, LV_EVENT_VALUE_CHANGED, NULL);
+    // -------------------------------------------------------
 
     create_header(scroll_cont, LV_SYMBOL_LIST " SYSTEM & BLE");
     

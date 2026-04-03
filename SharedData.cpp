@@ -7,7 +7,9 @@
 
 #include "AudioOutputI2S.h"
 #include "AudioGeneratorAAC.h"
+#include "AudioGeneratorWAV.h"
 #include "AudioFileSourceHTTPStream.h"
+#include "AudioFileSourceBuffer.h" 
 
 Preferences preferences;
 BLEClient* pClient = nullptr; 
@@ -139,7 +141,9 @@ float stdDevInterval = 0.0;
 bool displayIsOff = false;
 int brightnessPercent = 80;
 
-int mjpegDropThreshold = 0; // <--- NEU: HIER EINFÜGEN
+int mjpegDropThreshold = 0; 
+bool usePcmAudio = false; 
+bool useBabyCamHack = false; 
 
 bool audioDebugEnabled = false;
 String audioLogs[10];
@@ -184,6 +188,8 @@ void Data_Init() {
     savedKippyMac = preferences.getString("macK", SECRET_MAC_KIPPY);
     
     babyStreamUrl = preferences.getString("babyUrl", SECRET_BABY_STREAM_URL);
+    usePcmAudio = preferences.getBool("usePcm", false); 
+    useBabyCamHack = preferences.getBool("camHack", false);
     
     volumePercent = preferences.getInt("volumePercent", 50);
     streamVolumePercent = preferences.getInt("streamVol", 50);
@@ -254,8 +260,11 @@ void audioTask(void *pvParameters) {
     
     int16_t sample[2];
 
-    AudioGeneratorAAC *aac = nullptr;
+    AudioGenerator *decoder = nullptr; 
     AudioFileSourceHTTPStream *httpFile = nullptr;
+    AudioFileSourceBuffer *buffFile = nullptr; 
+    uint8_t *preallocBuffer = nullptr;         
+    
     bool streamRunning = false;
 
     while(1) {
@@ -267,24 +276,43 @@ void audioTask(void *pvParameters) {
             globalAudioOut->SetGain(pow(linearVol, 2.0f));
             
             httpFile = new AudioFileSourceHTTPStream(babyStreamUrl.c_str());
-            aac = new AudioGeneratorAAC();
             
-            if (aac->begin(httpFile, globalAudioOut)) {
+            // --- AUDIO DELAY FIX ---
+            // 4KB Puffer: Reduziert das kuenstliche Delay auf ca. 250 Millisekunden.
+            preallocBuffer = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+            if (preallocBuffer) {
+                buffFile = new AudioFileSourceBuffer(httpFile, preallocBuffer, 4096);
+            } else {
+                buffFile = new AudioFileSourceBuffer(httpFile, 2048);
+            }
+            // -----------------------
+
+            if (usePcmAudio) {
+                decoder = new AudioGeneratorWAV();
+            } else {
+                decoder = new AudioGeneratorAAC();
+            }
+            
+            if (decoder->begin(buffFile, globalAudioOut)) {
                 streamRunning = true;
                 babyStreamStatus = 2; 
-                addAudioLog("Baby-Stream gestartet");
+                addAudioLog(usePcmAudio ? "PCM-Stream gestartet" : "AAC-Stream gestartet");
             } else {
                 addAudioLog("Stream Fehler");
                 babyStreamStatus = 1; 
-                delete aac; aac = nullptr;
+                delete decoder; decoder = nullptr;
+                delete buffFile; buffFile = nullptr;
                 delete httpFile; httpFile = nullptr;
+                if (preallocBuffer) { heap_caps_free(preallocBuffer); preallocBuffer = nullptr; }
                 vTaskDelay(pdMS_TO_TICKS(1000)); 
             }
         } 
         else if (!shouldStream && streamRunning) {
-            if (aac->isRunning()) aac->stop(); 
-            delete aac; aac = nullptr;
+            if (decoder->isRunning()) decoder->stop(); 
+            delete decoder; decoder = nullptr;
+            delete buffFile; buffFile = nullptr;
             delete httpFile; httpFile = nullptr;
+            if (preallocBuffer) { heap_caps_free(preallocBuffer); preallocBuffer = nullptr; }
             streamRunning = false;
             babyStreamStatus = 0; 
             addAudioLog("Baby-Stream beendet");
@@ -300,13 +328,15 @@ void audioTask(void *pvParameters) {
             float linearVol = (float)streamVolumePercent / 100.0f;
             globalAudioOut->SetGain(pow(linearVol, 2.0f));
             
-            if (aac->isRunning()) {
-                if (!aac->loop()) aac->stop(); 
+            if (decoder->isRunning()) {
+                if (!decoder->loop()) decoder->stop(); 
             } else {
                 streamRunning = false;
                 babyStreamStatus = 1; 
-                delete aac; aac = nullptr;
+                delete decoder; decoder = nullptr;
+                delete buffFile; buffFile = nullptr;
                 delete httpFile; httpFile = nullptr;
+                if (preallocBuffer) { heap_caps_free(preallocBuffer); preallocBuffer = nullptr; }
             }
             
             if (xQueueReceive(audioQueue, &msg, 0) == pdTRUE) {} 
@@ -330,10 +360,9 @@ void audioTask(void *pvParameters) {
                         int16_t val = 0;
 
                         if (msg.soundType == 0) {
-                            // NEU: Moderner, sehr trockener und kurzer Smartphone-"Tick"
                             float currentFreq = 200.0f; 
                             float env = exp(-60.0f * ((float)i / numSamples)); 
-                            if (i > 64) env = 0.0f; // Nach ca 4 Millisekunden hart abschneiden
+                            if (i > 64) env = 0.0f; 
                             val = (int16_t)(sin(2.0f * M_PI * currentFreq * t) * env * 25000.0f);
                         }
                         else if (msg.soundType == 1) {
@@ -366,14 +395,13 @@ void audioTask(void *pvParameters) {
     }
 }
 
-// FIX: Audio Hardware synchron starten, um Bootloop (Race Condition mit SPI/LCD) zu verhindern
 void Audio_Init() {
     audioQueue = xQueueCreate(15, sizeof(AudioMsg));
     globalAudioOut = new AudioOutputKeepAlive();
     globalAudioOut->SetRate(16000);
     globalAudioOut->begin();
     
-    xTaskCreatePinnedToCore(audioTask, "AudioTask", 6144, NULL, 3, NULL, 1); 
+    xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 3, NULL, 1); 
 }
 
 void playToneI2S(uint16_t freq, uint32_t duration_ms, bool isUiSound) {

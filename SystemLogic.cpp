@@ -13,7 +13,6 @@
 #include "Touch_CST816.h"
 #include "esp_attr.h"
 
-// Panel für DMA Video Bypass
 extern esp_lcd_panel_handle_t panel_handle;
 
 const char* mqtt_topic_pressure = "lolacatmat/sensor/pressure";
@@ -40,10 +39,8 @@ static lv_image_dsc_t cam_img_dsc[2] = {{0}, {0}};
 static uint8_t dsc_idx = 0;
 static uint8_t* jpg_bufs[2] = {nullptr, nullptr}; 
 
-// --- ANTI-CRASH DMA ALLOKATION (PING-PONG BUFFER) ---
-// 1. Statisch reserviert -> Keine Fragmentierung, kein ESP_ERR_NO_MEM Crash!
-// 2. aligned(64) -> Garantiert Hardware-Cache-Konformitaet fuer den ESP32-S3!
-// 3. Auf 2 Buffer reduziert, um 10 KB internen RAM fuer WLAN & BT zu befreien!
+// --- ANTI-CRASH DMA ALLOKATION ---
+// 2 Puffer statt 3 (Ping-Pong), 10 KB gespart!
 DMA_ATTR __attribute__((aligned(64))) static uint16_t dma_chunk_bufs[2][320 * 16];
 static uint8_t dma_chunk_idx = 0;
 
@@ -60,7 +57,6 @@ int JPEGDraw(JPEGDRAW *pDraw) {
     if (draw_width <= 0) return 1;
 
     if (vidFSMode) {
-        // --- PING PONG LOGIK ---
         dma_chunk_idx = (dma_chunk_idx + 1) % 2; 
         uint16_t* dma_safe_buf = dma_chunk_bufs[dma_chunk_idx];
 
@@ -71,12 +67,21 @@ int JPEGDraw(JPEGDRAW *pDraw) {
             uint16_t *src = &pDraw->pPixels[y * pDraw->iWidth];
             uint16_t *dst = &dma_safe_buf[y * draw_width]; 
             
-            for(int i = 0; i < draw_width; i++) {
-                dst[i] = __builtin_bswap16(src[i]); 
+            // Loop-Unrolling fuer maximale Performance
+            int i = 0;
+            for(; i <= draw_width - 4; i += 4) {
+                dst[i]   = __builtin_bswap16(src[i]); 
+                dst[i+1] = __builtin_bswap16(src[i+1]); 
+                dst[i+2] = __builtin_bswap16(src[i+2]); 
+                dst[i+3] = __builtin_bswap16(src[i+3]); 
+            }
+            for(; i < draw_width; i++) {
+                dst[i] = __builtin_bswap16(src[i]);
             }
         }
         
-        if (showFps && pDraw->y <= 12 && pDraw->x <= 30) { 
+        // FPS Anzeige Bounding Box (Schont die CPU massiv!)
+        if (showFps && pDraw->x < 30 && pDraw->y < 12) { 
             static const uint8_t tinyFont[10][5] = { 
                 {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1}, 
                 {7,4,7,1,7}, {7,4,7,5,7}, {7,1,2,4,4}, {7,5,7,5,7}, {7,5,7,1,7} 
@@ -130,7 +135,7 @@ String getSetupHtml() {
     html += "<title>LolaCatMat Setup</title>";
     html += "<style>body{background:#1a1a1a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:20px;text-align:center;}";
     html += "h2{color:#00A0FF;margin-bottom:5px;}p{color:#aaa;font-size:14px;margin-bottom:30px;}";
-    html += "input{width:100%;padding:14px;margin:5px 0 20px 0;border-radius:8px;border:1px solid #333;background:#2a2a2a;color:#fff;font-size:16px;box-sizing:border-box;}";
+    html += "input,select{width:100%;padding:14px;margin:5px 0 20px 0;border-radius:8px;border:1px solid #333;background:#2a2a2a;color:#fff;font-size:16px;box-sizing:border-box;}";
     html += "button{background:#00A0FF;color:#fff;border:none;padding:16px;width:100%;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;margin-top:10px;}";
     html += "h3{text-align:left;border-bottom:1px solid #333;padding-bottom:5px;margin-top:30px;color:#ddd;}";
     html += "label{display:block;text-align:left;margin-top:15px;font-size:13px;color:#00A0FF;text-transform:uppercase;letter-spacing:1px;font-weight:bold;}</style></head><body>";
@@ -153,6 +158,16 @@ String getSetupHtml() {
     html += "<label>Babyphone Video URL (MJPEG oder Snapshot)</label><input type='text' name='camEntity' placeholder='http://192.168.../api/stream.mjpeg' value='" + camEntity + "'>";
     html += "<label>Babyphone Audio Stream URL</label><input type='text' name='babyUrl' placeholder='http://192.168.../api/stream.aac' value='" + babyStreamUrl + "'>";
     
+    html += "<label>Audio Format</label><select name='pcm'>";
+    html += "<option value='0'" + String(!usePcmAudio ? " selected" : "") + ">AAC (Kompression)</option>";
+    html += "<option value='1'" + String(usePcmAudio ? " selected" : "") + ">PCM S16 LE / WAV (CPU schonend)</option>";
+    html += "</select>";
+
+    html += "<label>Kamera API Hack</label><select name='camHack'>";
+    html += "<option value='0'" + String(!useBabyCamHack ? " selected" : "") + ">Deaktiviert (Normaler Stream)</option>";
+    html += "<option value='1'" + String(useBabyCamHack ? " selected" : "") + ">Aktiv (Erzwingt 320x240 via POST)</option>";
+    html += "</select>";
+
     html += "<h3>Home Assistant & Fallbacks</h3>";
     html += "<label>Home Assistant IP-Adresse</label><input type='text' name='haIP' placeholder='z.B. 192.168.1.100' value='" + haIP + "'>";
     html += "<label>Home Assistant Port (Standard: 8123)</label><input type='number' name='haPort' placeholder='8123' value='" + String(haPort) + "'>";
@@ -187,6 +202,10 @@ void handleSave() {
     if (server.hasArg("mqttBaby")) { String pw = sanitizeString(server.arg("mqttBaby")); preferences.putString("mqttBaby", pw); }
     if (server.hasArg("mqttCamTrig")) { String tr = sanitizeString(server.arg("mqttCamTrig")); preferences.putString("mqttCamTrig", tr); }
     if (server.hasArg("babyUrl")) { String u = sanitizeString(server.arg("babyUrl")); preferences.putString("babyUrl", u); }
+    
+    if (server.hasArg("pcm")) { usePcmAudio = server.arg("pcm").toInt() == 1; preferences.putBool("usePcm", usePcmAudio); }
+    if (server.hasArg("camHack")) { useBabyCamHack = server.arg("camHack").toInt() == 1; preferences.putBool("camHack", useBabyCamHack); }
+    
     preferences.end();
     
     String successHtml = "<!DOCTYPE html><html><body style='background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:sans-serif;'>";
@@ -414,6 +433,43 @@ void videoTask(void * pvParameters) {
             if (!url.startsWith("/")) url = "/" + url;
             url = "http://" + haIP + ":" + String(haPort) + url;
         }
+
+        // --- DER BABYCAM AUFLOESUNGS-HACK (Exakter Wireshark Nachbau) ---
+        if (useBabyCamHack) {
+            setUiStatus("Init Aufloesung...");
+            
+            int protoEnd = url.indexOf("://");
+            if (protoEnd != -1) {
+                int ipStart = protoEnd + 3;
+                int ipEnd = url.indexOf(':', ipStart);               
+                if (ipEnd == -1) ipEnd = url.indexOf('/', ipStart);  
+                
+                if (ipEnd != -1) {
+                    String ipStr = url.substring(ipStart, ipEnd);        
+                    
+                    HTTPClient httpHack;
+                    httpHack.setTimeout(2000);
+                    
+                    String hackUrl = "http://" + ipStr + ":8080/api/v1/camera/change-resolution";
+                    httpHack.begin(hackUrl);
+                    
+                    httpHack.addHeader("accept", "application/json, text/javascript, */*; q=0.01");
+                    httpHack.addHeader("accept-language", "en-US,en-DE;q=0.9,en;q=0.8,de-DE;q=0.7,de;q=0.6");
+                    httpHack.addHeader("content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+                    httpHack.addHeader("password", "");
+                    httpHack.addHeader("x-requested-with", "XMLHttpRequest");
+                    
+                    String payload = "{width:640,height:360}";
+                                        
+                    int hackCode = httpHack.POST(payload);
+                    Serial.printf("Cam Hack HTTP Code: %d an URL: %s\n", hackCode, hackUrl.c_str());
+                    httpHack.end();
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500)); 
+                }
+            }
+        }
+        // ----------------------------------------------------------------
         
         setUiStatus("Verbinde Stream...");
         http.begin(url); 
@@ -426,7 +482,6 @@ void videoTask(void * pvParameters) {
 
             while (isStreamActive && gui.getCurrentScreen() == SCREEN_BABY && stream->connected()) {
                 
-                // --- VOLLBILD NOTAUSGANG ---
                 if (vidFSMode) {
                     static uint32_t lastTouchCheck = 0;
                     if (millis() - lastTouchCheck > 100) { 
@@ -447,7 +502,6 @@ void videoTask(void * pvParameters) {
                 bool headerDone = false;
                 headerLen = 0;
                 
-                // --- ROCK-SOLID PARSER ---
                 while (stream->connected()) {
                     if (stream->available()) {
                         char c = stream->read();
@@ -479,14 +533,41 @@ void videoTask(void * pvParameters) {
                 if (!headerDone) break;
 
                 if (frameSize > 0 && frameSize <= MAX_JPEG_DOWNLOAD_SIZE) {
+                    
+                    bool skipDecoding = false;
+                    int safeThreshold = (mjpegDropThreshold < 2048) ? 2048 : mjpegDropThreshold;
+                    
+                    if (stream->available() > safeThreshold) {
+                        skipDecoding = true; 
+                    }
+
+                    if (skipDecoding) {
+                        static uint8_t trash_buf[512];
+                        size_t skipped = 0;
+                        uint32_t startSkip = millis();
+                        
+                        while (skipped < frameSize && stream->connected() && (millis() - startSkip < 1000)) {
+                            if (stream->available() > 0) {
+                                size_t toSkip = frameSize - skipped;
+                                if (toSkip > sizeof(trash_buf)) toSkip = sizeof(trash_buf);
+                                size_t readNow = stream->read(trash_buf, toSkip);
+                                if (readNow > 0) skipped += readNow;
+                            } else {
+                                vTaskDelay(1);
+                            }
+                        }
+                        continue; 
+                    }
+
                     size_t bytesRead = 0;
                     uint32_t startReadTime = millis();
                     
                     while (bytesRead < frameSize && stream->connected() && (millis() - startReadTime < 3000)) {
-                        size_t toRead = frameSize - bytesRead;
-                        size_t readNow = stream->read(download_buf + bytesRead, toRead);
-                        if (readNow > 0) {
-                            bytesRead += readNow;
+                        if (stream->available() > 0) {
+                            size_t toRead = frameSize - bytesRead;
+                            if (toRead > 1436) toRead = 1436;
+                            size_t readNow = stream->read(download_buf + bytesRead, toRead);
+                            if (readNow > 0) bytesRead += readNow;
                         } else {
                             vTaskDelay(1); 
                         }
@@ -494,16 +575,6 @@ void videoTask(void * pvParameters) {
 
                     if (bytesRead == frameSize) {
                         if (download_buf[0] == 0xFF && download_buf[1] == 0xD8) {
-                            
-                            // --- BEWAEHRTER LATENZ-KILLER ---
-                            if (mjpegDropThreshold == 0 && stream->available() > 0) {
-                                vTaskDelay(1); 
-                                continue; 
-                            } else if (mjpegDropThreshold > 0 && stream->available() > mjpegDropThreshold) {
-                                vTaskDelay(1); 
-                                continue; 
-                            }
-                            // --------------------------------
 
                             if (jpeg.openRAM(download_buf, frameSize, JPEGDraw)) {
                                 uint16_t w = jpeg.getWidth() / 2; 
@@ -560,11 +631,14 @@ void videoTask(void * pvParameters) {
                      size_t skipped = 0;
                      uint32_t startSkip = millis();
                      while (skipped < frameSize && stream->connected() && (millis() - startSkip < 3000)) {
-                         size_t toSkip = frameSize - skipped;
-                         if (toSkip > MAX_JPEG_DOWNLOAD_SIZE) toSkip = MAX_JPEG_DOWNLOAD_SIZE;
-                         size_t readNow = stream->read(download_buf, toSkip);
-                         if (readNow > 0) skipped += readNow;
-                         else vTaskDelay(1);
+                         if (stream->available() > 0) {
+                             size_t toSkip = frameSize - skipped;
+                             if (toSkip > MAX_JPEG_DOWNLOAD_SIZE) toSkip = MAX_JPEG_DOWNLOAD_SIZE;
+                             size_t readNow = stream->read(download_buf, toSkip);
+                             if (readNow > 0) skipped += readNow;
+                         } else {
+                             vTaskDelay(1);
+                         }
                      }
                 }
                 

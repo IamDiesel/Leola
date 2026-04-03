@@ -27,10 +27,8 @@
 
 enum GraphMode { GRAPH_MODE_PRESSURE = 0, GRAPH_MODE_BLE_RSSI, GRAPH_MODE_WLAN_RSSI, GRAPH_MODE_BLE_INTERVAL, GRAPH_MODE_KIPPY_RSSI };
 
-// ANGEPASST: soundType hinzugefügt (0=UI, 1=Baby, 2=Cat)
 struct AudioMsg { uint16_t freq; uint32_t duration; bool isUiSound; uint8_t soundType; };
 
-// Debug Logging Variablen
 extern bool audioDebugEnabled;
 extern String audioLogs[10];
 extern int audioLogIdx;
@@ -173,19 +171,20 @@ extern bool displayIsOff;
 extern int brightnessPercent;
 extern bool mqttEnabled;
 extern volatile bool requestBabyStream;
-extern volatile int babyStreamStatus; // 0=Aus, 1=Fehler/Laden, 2=Spielt
-extern volatile bool vidFSMode; //video in fullscreen mode via DMA
+extern volatile int babyStreamStatus; 
+extern volatile bool vidFSMode; 
 extern volatile bool showFps;
 extern volatile int currentFps;
 
-extern int mjpegDropThreshold; // <--- NEU: HIER EINFÜGEN
+extern int mjpegDropThreshold; 
+extern bool usePcmAudio; 
+extern bool useBabyCamHack; 
 
 void Data_Init();
 void Audio_Init();
 void calcMultiplex();
 void playToneI2S(uint16_t freq, uint32_t duration_ms, bool isUiSound = false);
 
-// NEU: Die spezifischen Alarm-Profile
 void playBabyAlarmI2S();
 void playCatAlarmI2S();
 
