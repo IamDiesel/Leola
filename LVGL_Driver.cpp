@@ -5,9 +5,7 @@
 ******************************************************************************/
 #include "LVGL_Driver.h"
 
-// --- NEU: Wir importieren unsere Vollbild-Variable ---
 extern volatile bool vidFSMode;
-// -----------------------------------------------------
 
 uint32_t bufSize;
 lv_color_t *disp_draw_buf1;
@@ -16,10 +14,8 @@ lv_color_t *disp_draw_buf2;
 static StaticSemaphore_t lvgl_mutex_buf;
 static SemaphoreHandle_t lvgl_mutex = NULL;
 
-// Globale Variable, damit der Interrupt LVGL findet
 lv_display_t * global_disp = NULL;
 
-// Das ist die Bruecke zwischen dem Hardware-Interrupt und LVGL
 void lvgl_flush_ready_callback(void) {
     if (global_disp != NULL) {
         lv_display_flush_ready(global_disp);
@@ -57,13 +53,11 @@ void my_disp_flush( lv_display_t *disp, const lv_area_t *area, uint8_t * px_map)
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
   
-  lv_draw_sw_rgb565_swap(px_map, w * h);
+  // WICHTIG: LVGL muss die Farben per Software drehen, 
+  // da das ST77916 Panel an QSPI Big-Endian erwartet!
+  lv_draw_sw_rgb565_swap(px_map, w * h); 
   
-  // Das hier loest im Hintergrund die asynchrone SPI DMA Uebertragung aus
-  LCD_addWindow(area->x1, area->y1, area->x2, area->y2, ( uint16_t *)px_map);
-  
-  // WICHTIG: Das fruehere lv_display_flush_ready(disp); wurde hier ABSICHTLICH GELÖSCHT!
-  // Es wird jetzt erst im Hardware-Interrupt asynchron aufgerufen, wenn die Uebertragung wirklich fertig ist.
+  LCD_addWindow(area->x1, area->y1, area->x2, area->y2, (uint16_t *)px_map);
 }
 
 void my_touchpad_read( lv_indev_t * indev_drv, lv_indev_data_t * data )
@@ -92,12 +86,9 @@ void LVGL_Loop(void *parameter)
     {
       lvgl_port_lock(0);
       
-      // --- NEU: Der LVGL Tiefschlaf! ---
-      // Wenn wir im Hardware-Vollbild sind, darf LVGL nichts mehr zeichnen
       if (!vidFSMode) {
           lv_timer_handler(); 
       }
-      // ---------------------------------
       
       lvgl_port_unlock();
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -113,7 +104,6 @@ void Lvgl_Init(void)
   bufSize = LCD_WIDTH * 15; 
   uint32_t draw_size_bytes = bufSize * 2;
   
-  // Perfekt: Hier waren die DMA Puffer bereits richtig angelegt!
   disp_draw_buf1 = (lv_color_t *)heap_caps_malloc(draw_size_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
   disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(draw_size_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
 
@@ -129,7 +119,6 @@ void Lvgl_Init(void)
   lv_display_set_color_format(global_disp, LV_COLOR_FORMAT_RGB565);
   lv_display_set_flush_cb(global_disp, my_disp_flush);
   
-  // Da der Interrupt jetzt laeuft, nutzt LVGL ab sofort astreines Hardware-Ping-Pong
   lv_display_set_buffers(global_disp, disp_draw_buf1, disp_draw_buf2, draw_size_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_indev_t * indev = lv_indev_create();

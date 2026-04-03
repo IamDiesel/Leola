@@ -40,16 +40,12 @@ static lv_image_dsc_t cam_img_dsc[2] = {{0}, {0}};
 static uint8_t dsc_idx = 0;
 static uint8_t* jpg_bufs[2] = {nullptr, nullptr}; 
 
-// --- STATISCHE SPEICHERALLOKATION (Compile-Time) ---
-static DMA_ATTR uint16_t static_dma_memory[3][320 * 16]; 
-
-static uint16_t* dma_chunk_bufs[3] = { 
-    static_dma_memory[0], 
-    static_dma_memory[1], 
-    static_dma_memory[2] 
-};
+// --- ANTI-CRASH DMA ALLOKATION (PING-PONG BUFFER) ---
+// 1. Statisch reserviert -> Keine Fragmentierung, kein ESP_ERR_NO_MEM Crash!
+// 2. aligned(64) -> Garantiert Hardware-Cache-Konformitaet fuer den ESP32-S3!
+// 3. Auf 2 Buffer reduziert, um 10 KB internen RAM fuer WLAN & BT zu befreien!
+DMA_ATTR __attribute__((aligned(64))) static uint16_t dma_chunk_bufs[2][320 * 16];
 static uint8_t dma_chunk_idx = 0;
-// ---------------------------------------------------
 
 JPEGDEC jpeg;
 volatile uint16_t* jpeg_decode_target = nullptr;
@@ -64,8 +60,8 @@ int JPEGDraw(JPEGDRAW *pDraw) {
     if (draw_width <= 0) return 1;
 
     if (vidFSMode) {
-        // --- GOD MODE (On-The-Fly DMA mit Triplet-Buffer) ---
-        dma_chunk_idx = (dma_chunk_idx + 1) % 3; 
+        // --- PING PONG LOGIK ---
+        dma_chunk_idx = (dma_chunk_idx + 1) % 2; 
         uint16_t* dma_safe_buf = dma_chunk_bufs[dma_chunk_idx];
 
         for (int y = 0; y < pDraw->iHeight; y++) {
@@ -80,7 +76,6 @@ int JPEGDraw(JPEGDRAW *pDraw) {
             }
         }
         
-        // --- BARE-METAL FPS STEMPEL ---
         if (showFps && pDraw->y <= 12 && pDraw->x <= 30) { 
             static const uint8_t tinyFont[10][5] = { 
                 {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1}, 
@@ -92,30 +87,19 @@ int JPEGDraw(JPEGDRAW *pDraw) {
             int ones = current_fps_val % 10;
             const uint16_t green = 0xE007; 
 
-            int start_abs_x = 12; 
-            int start_abs_y = 2;  
-            int box_w = 11;
-            int box_h = 7;
-
-            for (int by = 0; by < box_h; by++) {
-                int abs_y = start_abs_y + by;
-                int local_y = abs_y - pDraw->y;
-
+            for (int by = 0; by < 7; by++) {
+                int local_y = (2 + by) - pDraw->y;
                 if (local_y >= 0 && local_y < pDraw->iHeight) {
-                    for (int bx = 0; bx < box_w; bx++) {
-                        int abs_x = start_abs_x + bx;
-                        int local_x = abs_x - pDraw->x;
-
+                    for (int bx = 0; bx < 11; bx++) {
+                        int local_x = (12 + bx) - pDraw->x;
                         if (local_x >= 0 && local_x < draw_width) {
                             bool is_text = false;
-
                             if (bx >= 1 && bx < 4 && by >= 1 && by < 6) {
                                 if (tinyFont[tens][by-1] & (1 << (2 - (bx-1)))) is_text = true;
                             }
                             else if (bx >= 7 && bx < 10 && by >= 1 && by < 6) {
                                 if (tinyFont[ones][by-1] & (1 << (2 - (bx-7)))) is_text = true;
                             }
-
                             dma_safe_buf[local_y * draw_width + local_x] = is_text ? green : 0x0000;
                         }
                     }
@@ -130,11 +114,9 @@ int JPEGDraw(JPEGDRAW *pDraw) {
                                   90 + pDraw->y + pDraw->iHeight, 
                                   dma_safe_buf);
     } else {
-        // --- NORMALER BETRIEB ---
         for (int y = 0; y < pDraw->iHeight; y++) {
             int absolute_y = pDraw->y + y;
             if (absolute_y >= jpeg_decode_height) break; 
-            
             memcpy((void*)&jpeg_decode_target[absolute_y * jpeg_decode_width + pDraw->x],
                    &pDraw->pPixels[y * pDraw->iWidth],
                    draw_width * 2);
@@ -399,8 +381,6 @@ void setUiStatus(const char* msg) {
 #define MAX_PIXEL_BUF_SIZE (320 * 180 * 2) 
 
 void videoTask(void * pvParameters) {
-    uint32_t waitTimer = 0;
-    
     uint8_t* download_buf = (uint8_t*)heap_caps_malloc(MAX_JPEG_DOWNLOAD_SIZE, MALLOC_CAP_SPIRAM);
     jpg_bufs[0] = (uint8_t*)heap_caps_malloc(MAX_PIXEL_BUF_SIZE, MALLOC_CAP_SPIRAM);
     jpg_bufs[1] = (uint8_t*)heap_caps_malloc(MAX_PIXEL_BUF_SIZE, MALLOC_CAP_SPIRAM);
@@ -413,6 +393,9 @@ void videoTask(void * pvParameters) {
     HTTPClient http; 
     http.setReuse(true);       
     http.setTimeout(3000); 
+
+    char headerBuf[128]; 
+    int headerLen = 0;
 
     for(;;) {
         if (!isStreamActive || gui.getCurrentScreen() != SCREEN_BABY) {
@@ -441,15 +424,30 @@ void videoTask(void * pvParameters) {
             stream->setNoDelay(true); 
             setUiStatus("Stream laeuft!");
 
-            char headerBuf[128];
-            int headerLen = 0;
-
             while (isStreamActive && gui.getCurrentScreen() == SCREEN_BABY && stream->connected()) {
+                
+                // --- VOLLBILD NOTAUSGANG ---
+                if (vidFSMode) {
+                    static uint32_t lastTouchCheck = 0;
+                    if (millis() - lastTouchCheck > 100) { 
+                        lastTouchCheck = millis();
+                        Touch_Read_Data(); 
+                        if (touch_data.points > 0 || alarmActive || babyAlarmActive || disconnectAlarmActive) {
+                            vidFSMode = false;
+                            touch_data.points = 0; 
+                            if (lvgl_port_lock(portMAX_DELAY)) {
+                                lv_obj_invalidate(lv_scr_act()); 
+                                lvgl_port_unlock();
+                            }
+                        }
+                    }
+                }
                 
                 int frameSize = 0;
                 bool headerDone = false;
                 headerLen = 0;
                 
+                // --- ROCK-SOLID PARSER ---
                 while (stream->connected()) {
                     if (stream->available()) {
                         char c = stream->read();
@@ -497,7 +495,7 @@ void videoTask(void * pvParameters) {
                     if (bytesRead == frameSize) {
                         if (download_buf[0] == 0xFF && download_buf[1] == 0xD8) {
                             
-                            // --- ORIGINAL LATENZ-KILLER ---
+                            // --- BEWAEHRTER LATENZ-KILLER ---
                             if (mjpegDropThreshold == 0 && stream->available() > 0) {
                                 vTaskDelay(1); 
                                 continue; 
@@ -505,7 +503,7 @@ void videoTask(void * pvParameters) {
                                 vTaskDelay(1); 
                                 continue; 
                             }
-                            // ------------------------------
+                            // --------------------------------
 
                             if (jpeg.openRAM(download_buf, frameSize, JPEGDraw)) {
                                 uint16_t w = jpeg.getWidth() / 2; 
@@ -519,7 +517,6 @@ void videoTask(void * pvParameters) {
                                     jpeg_decode_height = h; 
                                     
                                     if (vidFSMode) {
-                                        // --- TOUCH-ABFRAGE WURDE HIER ENTFERNT UND IN SYSTEMLOGIC_UPDATE VERSCHOBEN ---
                                         if (lvgl_port_lock(portMAX_DELAY)) { 
                                             jpeg.decode(0, 0, JPEG_SCALE_HALF); 
                                             lvgl_port_unlock(); 
@@ -699,30 +696,28 @@ void SystemLogic_Init() {
 }
 
 void SystemLogic_Update() {
-    // --- VOLLBILD NOTAUSGANG (Unabhaengig vom WLAN) ---
-    // Diese Abfrage rettet uns, wenn das Video haengt und der User zurueck ins Menue will!
-    if (vidFSMode) {
-        Touch_Read_Data(); 
-        if (touch_data.points > 0 || alarmActive || babyAlarmActive || disconnectAlarmActive) {
-            vidFSMode = false;
-            touch_data.points = 0; 
-            if (lvgl_port_lock(portMAX_DELAY)) {
-                lv_obj_invalidate(lv_scr_act()); 
-                lvgl_port_unlock();
-            }
-        }
-    }
-    // --------------------------------------------------
-
     calcMultiplex(); if (webSetupMode > 0 || pendingWebSetupMode > 0) return; 
     if (isSetupScanning) { if (millis() - setupScanStartTime > 45000) { isSetupScanning = false; if (pBLEScan->isScanning()) pBLEScan->stop(); } else { if (!pBLEScan->isScanning() && !scanJustFinished) { if (connectTaskHandle != NULL) { return; } if (connected) { intentionalDisconnect = true; pClient->disconnect(); } if (wifiStarted) { WiFi.disconnect(true, false); wifiStarted = false; } pBLEScan->setInterval(200); pBLEScan->setWindow(100); pBLEScan->start(5, scanEndedCB, false); } } static uint32_t lastUiStringUpdate = 0; if (millis() - lastUiStringUpdate > 1000) { lastUiStringUpdate = millis(); if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(30)) == pdTRUE) { String options = ""; for(int i=0; i<scanResultCount; i++) { String m = scanResultMacs[i]; String n = scanResultNames[i]; if (n.length() > 14) n = n.substring(0, 12) + ".."; String entry = m + " | " + n + " | " + String(scanResultRssi[i]); options += entry; if (i < scanResultCount - 1) options += "\n"; } if (scanResultCount == 0) options = "Suche laeuft..."; strncpy(scanOptionsStr, options.c_str(), sizeof(scanOptionsStr) - 1); scanOptionsStr[sizeof(scanOptionsStr) - 1] = '\0'; xSemaphoreGive(bleMutex); requestRollerUpdate = true; } } if (scanJustFinished) scanJustFinished = false; return; }
     if (!wifiEnabled && wifiStarted) { WiFi.disconnect(true, false); wifiStarted = false; timeSynced = false; }
-    if (wifiEnabled && !wifiStarted && !isTrackerMode && effPrioWifi > 0) { WiFi.setTxPower(WIFI_POWER_8_5dBm); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str()); wifiStarted = true; }
+    if (wifiEnabled && !wifiStarted && !isTrackerMode && effPrioWifi > 0) { 
+        WiFi.setTxPower(WIFI_POWER_8_5dBm);
+        WiFi.begin(wifiSsid.c_str(), wifiPass.c_str()); 
+        wifiStarted = true; 
+    }
     if (!matEnabled && connected) { intentionalDisconnect = true; pClient->disconnect(); }
     if (!kippyEnabled && pBLEScan->isScanning() && !isTrackerMode) { pBLEScan->stop(); pBLEScan->clearResults(); }
     if (!wifiEnabled && !matEnabled && kippyEnabled && !isTrackerMode) { isTrackerMode = true; intentionalDisconnect = true; radarSetupPhase = 1; storedGraphMode = currentGraphMode; currentGraphMode = GRAPH_MODE_KIPPY_RSSI; historyIdx = 0; historyCount = 0; for(int i=0; i<HISTORY_SIZE; i++) pressureHistory[i] = -32000; requestChartUpdate = true; } else if ((wifiEnabled || matEnabled) && isTrackerMode) { isTrackerMode = false; pendingRadarTeardown = true; currentGraphMode = storedGraphMode; historyIdx = 0; historyCount = 0; for(int i=0; i<HISTORY_SIZE; i++) pressureHistory[i] = -32000; requestChartUpdate = true; }
     static uint32_t stateWaitTimer = 0; if (radarSetupPhase == 1) { if (connected) { pClient->disconnect(); } stateWaitTimer = millis(); radarSetupPhase = 2; } else if (radarSetupPhase == 2) { if (!connected || (millis() - stateWaitTimer > 2000)) { connected = false; radarSetupPhase = 3; } } else if (radarSetupPhase == 3) { if (wifiStarted) { WiFi.disconnect(true, false); wifiStarted = false; } if (pBLEScan->isScanning()) pBLEScan->stop(); pBLEScan->clearResults(); pBLEScan->setInterval(100); pBLEScan->setWindow(99); pBLEScan->start(0, scanEndedCB, false); radarSetupPhase = 0; }
-    if (pendingRadarTeardown) { pendingRadarTeardown = false; if (pBLEScan->isScanning()) pBLEScan->stop(); pBLEScan->clearResults(); if (wifiEnabled) { WiFi.setTxPower(WIFI_POWER_8_5dBm); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str()); wifiStarted = true; } }
+    if (pendingRadarTeardown) { 
+        pendingRadarTeardown = false; 
+        if (pBLEScan->isScanning()) pBLEScan->stop(); 
+        pBLEScan->clearResults(); 
+        if (wifiEnabled) { 
+            WiFi.setTxPower(WIFI_POWER_8_5dBm);
+            WiFi.begin(wifiSsid.c_str(), wifiPass.c_str()); 
+            wifiStarted = true; 
+        } 
+    }
     if (pendingBleReconnect) { if (connected) { pClient->disconnect(); } pendingBleReconnect = false; }
     if (connected && matEnabled && !isTrackerMode) { static uint32_t lastRssiCheck = 0; if (millis() - lastRssiCheck > 2000) { lastRssiCheck = millis(); int currentRssi = pClient->getRssi(); static int zeroCount = 0; if (currentRssi == 0) { rssiIsZero = true; zeroCount++; if (zeroCount >= 3) { executeDisconnectLogic(false); pClient->disconnect(); zeroCount = 0; } } else { rssiIsZero = false; zeroCount = 0; } } }
     if (!isSetupScanning && !connected && matEnabled && !isTrackerMode && effPrioMat > 0) { static uint32_t lastTry = 0; if (millis() - lastTry > 5000 && connectTaskHandle == NULL) { lastTry = millis(); if (pBLEScan->isScanning()) { pBLEScan->stop(); delay(150); } xTaskCreate(connectTask, "ConnectTask", 4096, NULL, 1, &connectTaskHandle); } }

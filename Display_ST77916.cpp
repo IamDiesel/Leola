@@ -14,10 +14,10 @@
 #define LCD_OPCODE_READ_CMD         (0x0BULL)
 #define LCD_OPCODE_WRITE_COLOR      (0x32ULL)
 
-// NEU: Bekanntmachung unserer Callback-Funktion aus der LVGL_Driver.cpp
+// Bekanntmachung unserer Callback-Funktion aus der LVGL_Driver.cpp
 extern void lvgl_flush_ready_callback(void);
 
-// NEU: Der Hardware-Interrupt! Wird vom ESP32 aufgerufen, wenn DMA fertig ist.
+// Der Hardware-Interrupt! Wird vom ESP32 aufgerufen, wenn DMA fertig ist.
 static bool notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
     lvgl_flush_ready_callback();
     return false;
@@ -246,7 +246,6 @@ int QSPI_Init(void){
     .spi_mode = ESP_PANEL_LCD_SPI_MODE,                      
     .pclk_hz = 5 * 1000 * 1000,     
     .trans_queue_depth = ESP_PANEL_LCD_SPI_TRANS_QUEUE_SZ,            
-    // NEU: LVGL benachrichtigen, wenn DMA Puffer fertig uebertragen hat
     .on_color_trans_done = notify_lvgl_flush_ready,                            
     .user_ctx = NULL,                   
     .lcd_cmd_bits = ESP_PANEL_LCD_SPI_CMD_BITS,                 
@@ -358,7 +357,7 @@ void Backlight_Init()
 {
   ledcAttach(LCD_Backlight_PIN, Frequency, Resolution);   
   ledcWrite(LCD_Backlight_PIN, Dutyfactor);  
-  Set_Backlight(LCD_Backlight);      //0~100                 
+  Set_Backlight(LCD_Backlight);                      
 }
 
 void Set_Backlight(uint8_t Light)                     
