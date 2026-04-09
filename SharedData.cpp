@@ -11,6 +11,9 @@
 #include "AudioFileSourceHTTPStream.h"
 #include "AudioFileSourceBuffer.h" 
 
+// Zugriff auf den Video-Status fuer das Multiplexing
+extern volatile bool isStreamActive; 
+
 Preferences preferences;
 BLEClient* pClient = nullptr; 
 BLEScan* pBLEScan = nullptr;
@@ -143,8 +146,7 @@ int brightnessPercent = 80;
 
 int mjpegDropThreshold = 0; 
 bool usePcmAudio = false; 
-bool useBabyCamHack = false; 
-
+int camHackMode = 0; 
 bool audioDebugEnabled = false;
 String audioLogs[10];
 int audioLogIdx = 0;
@@ -189,7 +191,7 @@ void Data_Init() {
     
     babyStreamUrl = preferences.getString("babyUrl", SECRET_BABY_STREAM_URL);
     usePcmAudio = preferences.getBool("usePcm", false); 
-    useBabyCamHack = preferences.getBool("camHack", false);
+    camHackMode = preferences.getInt("camHackM", 0); 
     
     volumePercent = preferences.getInt("volumePercent", 50);
     streamVolumePercent = preferences.getInt("streamVol", 50);
@@ -215,6 +217,12 @@ void Data_Init() {
 }
 
 void calcMultiplex() {
+    if (isStreamActive && !isArmed) {
+        effPrioMat = 0;
+        effPrioKippy = 0;
+        effPrioWifi = 100.0;
+        return;
+    }
     if (!wifiEnabled && !kippyEnabled && !matEnabled) { effPrioMat = 0; effPrioKippy = 0; effPrioWifi = 0; return; }
     if (!matEnabled && (!kippyEnabled || !wifiEnabled)) { effPrioMat = 0; effPrioWifi = wifiEnabled ? 100.0 : 0.0; effPrioKippy = kippyEnabled ? 100.0 : 0.0; return; }
     
@@ -236,7 +244,8 @@ class AudioOutputKeepAlive : public AudioOutputI2S {
 private:
     bool isInitialized = false; 
 public:
-    AudioOutputKeepAlive() : AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S, 8, 512) {
+    // Sicherer Hardware DMA Puffer (6x256)
+    AudioOutputKeepAlive() : AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S, 6, 256) {
         SetPinout(I2S_BCLK, I2S_LRCK, I2S_DOUT);
     }
     
@@ -248,7 +257,6 @@ public:
         }
         return true; 
     }
-    
     virtual bool stop() override { return true; }
 };
 
@@ -257,7 +265,6 @@ AudioOutputKeepAlive *globalAudioOut = nullptr;
 void audioTask(void *pvParameters) {
     audioLogger = &myOverlayLogger; 
     AudioMsg msg;
-    
     int16_t sample[2];
 
     AudioGenerator *decoder = nullptr; 
@@ -266,30 +273,49 @@ void audioTask(void *pvParameters) {
     uint8_t *preallocBuffer = nullptr;         
     
     bool streamRunning = false;
+    int lastStreamVol = -1;
+    float cachedStreamGain = 0.25f;
+    int lastUiVol = -1;
+    float cachedUiGain = 0.25f;
+
+    uint32_t uiCheckCounter = 0;
 
     while(1) {
         bool shouldStream = requestBabyStream && !alarmActive && !disconnectAlarmActive && (WiFi.status() == WL_CONNECTED);
 
         if (shouldStream && !streamRunning) {
             babyStreamStatus = 1; 
+            
+            lastStreamVol = streamVolumePercent;
             float linearVol = (float)streamVolumePercent / 100.0f;
-            globalAudioOut->SetGain(pow(linearVol, 2.0f));
+            cachedStreamGain = linearVol * linearVol; 
+            globalAudioOut->SetGain(cachedStreamGain);
             
             httpFile = new AudioFileSourceHTTPStream(babyStreamUrl.c_str());
             
-            // --- AUDIO DELAY FIX ---
-            // 4KB Puffer: Reduziert das kuenstliche Delay auf ca. 250 Millisekunden.
-            preallocBuffer = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
-            if (preallocBuffer) {
-                buffFile = new AudioFileSourceBuffer(httpFile, preallocBuffer, 4096);
-            } else {
-                buffFile = new AudioFileSourceBuffer(httpFile, 2048);
-            }
-            // -----------------------
-
             if (usePcmAudio) {
+                // WUNSCH: Software-Puffer erzwungen in den internen SRAM!
+                preallocBuffer = (uint8_t*)heap_caps_malloc(16384, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                
+                if (preallocBuffer) {
+                    buffFile = new AudioFileSourceBuffer(httpFile, preallocBuffer, 16384);
+                } else {
+                    // Fallbacks, falls der SRAM fragmentiert ist
+                    preallocBuffer = (uint8_t*)heap_caps_malloc(8192, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                    if (preallocBuffer) {
+                        buffFile = new AudioFileSourceBuffer(httpFile, preallocBuffer, 8192);
+                    } else {
+                        buffFile = new AudioFileSourceBuffer(httpFile, 4096); 
+                    }
+                }
                 decoder = new AudioGeneratorWAV();
             } else {
+                preallocBuffer = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                if (preallocBuffer) {
+                    buffFile = new AudioFileSourceBuffer(httpFile, preallocBuffer, 4096);
+                } else {
+                    buffFile = new AudioFileSourceBuffer(httpFile, 2048); 
+                }
                 decoder = new AudioGeneratorAAC();
             }
             
@@ -297,6 +323,7 @@ void audioTask(void *pvParameters) {
                 streamRunning = true;
                 babyStreamStatus = 2; 
                 addAudioLog(usePcmAudio ? "PCM-Stream gestartet" : "AAC-Stream gestartet");
+                uiCheckCounter = 0; 
             } else {
                 addAudioLog("Stream Fehler");
                 babyStreamStatus = 1; 
@@ -325,8 +352,17 @@ void audioTask(void *pvParameters) {
         }
 
         if (streamRunning) {
-            float linearVol = (float)streamVolumePercent / 100.0f;
-            globalAudioOut->SetGain(pow(linearVol, 2.0f));
+            if ((uiCheckCounter++ & 0x1F) == 0) {
+                if (streamVolumePercent != lastStreamVol) {
+                    lastStreamVol = streamVolumePercent;
+                    float linearVol = (float)streamVolumePercent / 100.0f;
+                    cachedStreamGain = linearVol * linearVol; 
+                    globalAudioOut->SetGain(cachedStreamGain);
+                }
+                if (uxQueueMessagesWaiting(audioQueue) > 0) {
+                    if (xQueueReceive(audioQueue, &msg, 0) == pdTRUE) {} 
+                }
+            }
             
             if (decoder->isRunning()) {
                 if (!decoder->loop()) decoder->stop(); 
@@ -338,56 +374,66 @@ void audioTask(void *pvParameters) {
                 delete httpFile; httpFile = nullptr;
                 if (preallocBuffer) { heap_caps_free(preallocBuffer); preallocBuffer = nullptr; }
             }
-            
-            if (xQueueReceive(audioQueue, &msg, 0) == pdTRUE) {} 
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(pdMS_TO_TICKS(1)); 
         } 
         else {
             babyStreamStatus = requestBabyStream ? 1 : 0;
             
             if (xQueueReceive(audioQueue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
                 if (!muted || msg.isUiSound) {
-                    float linearVol = (float)volumePercent / 100.0f;
-                    globalAudioOut->SetGain(pow(linearVol, 2.0f)); 
+                    if (volumePercent != lastUiVol) {
+                        lastUiVol = volumePercent;
+                        float linearVol = (float)volumePercent / 100.0f;
+                        cachedUiGain = linearVol * linearVol;
+                    }
+                    globalAudioOut->SetGain(cachedUiGain); 
                     globalAudioOut->SetRate(16000);
 
                     int numSamples = msg.duration * 16; 
                     if (numSamples < 16) numSamples = 16;
                     if (numSamples > 32000) numSamples = 32000; 
 
-                    for (int i = 0; i < numSamples; i++) {
-                        float t = (float)i / 16000.0f;
-                        int16_t val = 0;
+                    float currentPhase = 0.0f;
+                    float phaseInc1 = 0.0f;
+                    float phaseInc2 = 0.0f;
+                    
+                    if (msg.soundType == 0) { phaseInc1 = (2.0f * M_PI * 200.0f) / 16000.0f; }
+                    else if (msg.soundType == 1) { 
+                        phaseInc1 = (2.0f * M_PI * 600.0f) / 16000.0f; 
+                        phaseInc2 = (2.0f * M_PI * 800.0f) / 16000.0f; 
+                    }
 
+                    for (int i = 0; i < numSamples; i++) {
+                        int16_t val = 0;
                         if (msg.soundType == 0) {
-                            float currentFreq = 200.0f; 
-                            float env = exp(-60.0f * ((float)i / numSamples)); 
-                            if (i > 64) env = 0.0f; 
-                            val = (int16_t)(sin(2.0f * M_PI * currentFreq * t) * env * 25000.0f);
+                            float env = 1.0f;
+                            if (i <= 64) env = exp(-60.0f * ((float)i / numSamples)); 
+                            else env = 0.0f; 
+                            val = (int16_t)(sin(currentPhase) * env * 25000.0f);
+                            currentPhase += phaseInc1;
                         }
                         else if (msg.soundType == 1) {
-                            float currentFreq = (i < numSamples / 2) ? 600.0f : 800.0f;
-                            float progress = (i < numSamples / 2) ? ((float)i / (numSamples/2)) : ((float)(i - numSamples/2) / (numSamples/2));
+                            int halfSamples = numSamples / 2;
+                            float progress = (i < halfSamples) ? ((float)i / halfSamples) : ((float)(i - halfSamples) / halfSamples);
+                            currentPhase += (i < halfSamples) ? phaseInc1 : phaseInc2;
                             float env = sin(progress * M_PI); 
-                            val = (int16_t)(sin(2.0f * M_PI * currentFreq * t) * env * 12000.0f); 
+                            val = (int16_t)(sin(currentPhase) * env * 12000.0f); 
                         }
                         else if (msg.soundType == 2) {
-                            float sweep = sin(((float)i / numSamples) * M_PI);
+                            float progress = (float)i / numSamples;
+                            float sweep = sin(progress * M_PI);
                             float currentFreq = 700.0f + (400.0f * sweep); 
-                            float env = sin(((float)i / numSamples) * M_PI); 
-                            val = (int16_t)(sin(2.0f * M_PI * currentFreq * t) * env * 12000.0f); 
+                            currentPhase += (2.0f * M_PI * currentFreq) / 16000.0f;
+                            val = (int16_t)(sin(currentPhase) * sweep * 12000.0f); 
                         }
-                        
+                        if (currentPhase > 2.0f * M_PI) currentPhase -= 2.0f * M_PI;
                         sample[0] = val; sample[1] = val;
                         globalAudioOut->ConsumeSample(sample);
                     }
-
                     sample[0] = 0; sample[1] = 0;
                     for (int i = 0; i < 16000; i++) {
                         globalAudioOut->ConsumeSample(sample);
-                        if (i % 128 == 0 && uxQueueMessagesWaiting(audioQueue) > 0) {
-                            break; 
-                        }
+                        if (i % 128 == 0 && uxQueueMessagesWaiting(audioQueue) > 0) break; 
                     }
                 }
             }
@@ -401,7 +447,8 @@ void Audio_Init() {
     globalAudioOut->SetRate(16000);
     globalAudioOut->begin();
     
-    xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 3, NULL, 1); 
+    // Audio Task sicher auf Core 0
+    xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 5, NULL, 0); 
 }
 
 void playToneI2S(uint16_t freq, uint32_t duration_ms, bool isUiSound) {

@@ -7,6 +7,9 @@
 
 #define TEXT_COLOR (isDarkMode ? lv_color_white() : lv_color_black())
 
+extern bool lvgl_port_lock(uint32_t timeout_ms);
+extern void lvgl_port_unlock(void);
+
 static lv_obj_t * label_thr_val;
 static lv_obj_t * label_time_val;
 static lv_obj_t * label_mjpeg_drop_val;
@@ -28,6 +31,11 @@ static lv_obj_t * qr_screenshot;
 static lv_obj_t * btn_stop_screenshot; 
 static lv_obj_t * lbl_qr_ip; 
 
+static lv_obj_t * setup_overlay;      
+static lv_obj_t * setup_qr;      
+static lv_obj_t * btn_cancel_setup; 
+static lv_obj_t * lbl_setup_qr; 
+
 static lv_obj_t * scan_overlay; 
 static lv_obj_t * scan_spinner; 
 static lv_obj_t * lbl_scan_info;
@@ -40,46 +48,18 @@ static lv_obj_t * btn_continue_mac;
 static const int cam_intervals[] = {10, 20, 30, 50, 75, 100, 200, 300, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000};
 
 static void update_sliders_ui() {
-    if (!matEnabled || (!kippyEnabled && !wifiEnabled)) { 
-        lv_obj_add_state(sl_master, LV_STATE_DISABLED); 
-        lv_obj_set_style_text_color(lbl_master, lv_color_hex(0x555555), 0); 
-    } else { 
-        lv_obj_clear_state(sl_master, LV_STATE_DISABLED); 
-        lv_obj_set_style_text_color(lbl_master, TEXT_COLOR, 0); 
-    }
-    
-    if (!kippyEnabled || !wifiEnabled) { 
-        lv_obj_add_state(sl_slave, LV_STATE_DISABLED); 
-        lv_obj_set_style_text_color(lbl_slave, lv_color_hex(0x555555), 0); 
-    } else { 
-        lv_obj_clear_state(sl_slave, LV_STATE_DISABLED); 
-        lv_obj_set_style_text_color(lbl_slave, TEXT_COLOR, 0); 
-    }
+    if (!matEnabled || (!kippyEnabled && !wifiEnabled)) { lv_obj_add_state(sl_master, LV_STATE_DISABLED); lv_obj_set_style_text_color(lbl_master, lv_color_hex(0x555555), 0); } else { lv_obj_clear_state(sl_master, LV_STATE_DISABLED); lv_obj_set_style_text_color(lbl_master, TEXT_COLOR, 0); }
+    if (!kippyEnabled || !wifiEnabled) { lv_obj_add_state(sl_slave, LV_STATE_DISABLED); lv_obj_set_style_text_color(lbl_slave, lv_color_hex(0x555555), 0); } else { lv_obj_clear_state(sl_slave, LV_STATE_DISABLED); lv_obj_set_style_text_color(lbl_slave, TEXT_COLOR, 0); }
 }
 
-static lv_obj_t* create_text_label(lv_obj_t* parent, const char* text) {
-    lv_obj_t * lbl = lv_label_create(parent); lv_label_set_text(lbl, text); lv_obj_set_style_text_color(lbl, TEXT_COLOR, 0); return lbl;
-}
-static lv_obj_t* create_white_label(lv_obj_t* parent, const char* text) {
-    lv_obj_t * lbl = lv_label_create(parent); lv_label_set_text(lbl, text); lv_obj_set_style_text_color(lbl, lv_color_white(), 0); return lbl;
-}
-static lv_obj_t* create_header(lv_obj_t* parent, const char* text) {
-    lv_obj_t * header = lv_label_create(parent); lv_label_set_text(header, text); lv_obj_set_style_text_font(header, &lv_font_montserrat_14, 0); lv_obj_set_style_text_color(header, lv_color_hex(0x00A0FF), 0); lv_obj_set_style_pad_top(header, 15, 0); return header;
-}
-static lv_obj_t* create_helper_cont(lv_obj_t* parent, int height) {
-    lv_obj_t * cont = lv_obj_create(parent); lv_obj_set_size(cont, 220, height); lv_obj_set_style_bg_opa(cont, 0, 0); lv_obj_set_style_border_width(cont, 0, 0); lv_obj_set_style_pad_all(cont, 0, 0); lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE); return cont;
-}
+static lv_obj_t* create_text_label(lv_obj_t* parent, const char* text) { lv_obj_t * lbl = lv_label_create(parent); lv_label_set_text(lbl, text); lv_obj_set_style_text_color(lbl, TEXT_COLOR, 0); return lbl; }
+static lv_obj_t* create_white_label(lv_obj_t* parent, const char* text) { lv_obj_t * lbl = lv_label_create(parent); lv_label_set_text(lbl, text); lv_obj_set_style_text_color(lbl, lv_color_white(), 0); return lbl; }
+static lv_obj_t* create_header(lv_obj_t* parent, const char* text) { lv_obj_t * header = lv_label_create(parent); lv_label_set_text(header, text); lv_obj_set_style_text_font(header, &lv_font_montserrat_14, 0); lv_obj_set_style_text_color(header, lv_color_hex(0x00A0FF), 0); lv_obj_set_style_pad_top(header, 15, 0); return header; }
+static lv_obj_t* create_helper_cont(lv_obj_t* parent, int height) { lv_obj_t * cont = lv_obj_create(parent); lv_obj_set_size(cont, 220, height); lv_obj_set_style_bg_opa(cont, 0, 0); lv_obj_set_style_border_width(cont, 0, 0); lv_obj_set_style_pad_all(cont, 0, 0); lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE); return cont; }
 
-static void btn_back_cb(lv_event_t * e) { 
-    playToneI2S(800, 100, true);
-    gui.switchScreen(SCREEN_DASHBOARD, LV_SCR_LOAD_ANIM_MOVE_BOTTOM); 
-}
+static void btn_back_cb(lv_event_t * e) { playToneI2S(800, 100, true); gui.switchScreen(SCREEN_DASHBOARD, LV_SCR_LOAD_ANIM_MOVE_BOTTOM); }
 
-static void btn_stop_screenshot_cb(lv_event_t * e) { 
-    playToneI2S(600, 100, true); 
-    lv_obj_add_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
-    pendingScreenshotMode = 2; 
-}
+static void btn_stop_screenshot_cb(lv_event_t * e) { playToneI2S(600, 100, true); lv_obj_add_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); pendingScreenshotMode = 2; }
 
 static void easter_egg_cb(lv_event_t * e) {
     playToneI2S(800, 100, true);
@@ -91,20 +71,39 @@ static void easter_egg_cb(lv_event_t * e) {
     if (click_count >= 5) {
         click_count = 0; if (lbl) lv_label_set_text(lbl, LV_SYMBOL_LIST " INFORMATIONEN"); 
         String ipStr = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "Kein_WLAN"; 
-        String qrData = "http://" + ipStr;
+        String qrData = "http://" + ipStr + "/screenshot"; // QR leitet nun direkt auf Screenshot!
         lv_qrcode_update(qr_screenshot, qrData.c_str(), qrData.length()); 
         
-        if (lbl_qr_ip) lv_label_set_text_fmt(lbl_qr_ip, "Link: %s", qrData.c_str());
+        if (lbl_qr_ip) { lv_label_set_text_fmt(lbl_qr_ip, "Link: http://%s", ipStr.c_str()); lv_obj_align_to(lbl_qr_ip, qr_screenshot, LV_ALIGN_OUT_BOTTOM_MID, 0, 5); }
         
-        lv_obj_clear_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
-        lv_obj_move_foreground(qr_overlay);
-        
+        lv_obj_clear_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(qr_overlay);
         pendingScreenshotMode = 1; 
     } else { if (lbl) lv_label_set_text_fmt(lbl, LV_SYMBOL_LIST " INFORMATIONEN (%d/5)", click_count); }
 }
 
-static void btn_ap_setup_cb(lv_event_t * e) { playToneI2S(800, 100, true); if(isSetupScanning) return; pendingWebSetupMode = 1; }
-static void btn_sta_setup_cb(lv_event_t * e) { playToneI2S(800, 100, true); if(isSetupScanning) return; pendingWebSetupMode = 2; }
+static void btn_ap_setup_cb(lv_event_t * e) { 
+    playToneI2S(800, 100, true); if(isSetupScanning) return; 
+    uint32_t randNum = esp_random() % 90000000 + 10000000; apPassword = String(randNum); 
+    
+    // FIX (A): Layout gestrafft für bessere Lesbarkeit
+    lv_label_set_text_fmt(lbl_setup_qr, "SETUP WLAN\nSSID: LolaCatMat-Setup\nPW: %s", apPassword.c_str());
+    String qrData = "WIFI:S:LolaCatMat-Setup;T:WPA;P:" + apPassword + ";;";
+    lv_qrcode_update(setup_qr, qrData.c_str(), qrData.length());
+    lv_obj_clear_flag(setup_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(setup_overlay);
+    pendingWebSetupMode = 1; 
+}
+
+static void btn_sta_setup_cb(lv_event_t * e) { 
+    playToneI2S(800, 100, true); if(isSetupScanning) return; 
+    String ipStr = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "Kein_WLAN"; 
+    
+    // FIX (A): Kompakter Zeilenumbruch
+    lv_label_set_text_fmt(lbl_setup_qr, "SYSTEM SETUP\nLink: http://%s", ipStr.c_str());
+    String qrData = "http://" + ipStr;
+    lv_qrcode_update(setup_qr, qrData.c_str(), qrData.length());
+    lv_obj_clear_flag(setup_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(setup_overlay);
+    pendingWebSetupMode = 2; 
+}
 
 static void slider_thr_event_cb(lv_event_t * e) { playToneI2S(1000, 50, true); lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e); int val = lv_slider_get_value(slider); val = (val / 10) * 10; lv_slider_set_value(slider, val, LV_ANIM_OFF); thresholdVal = val; lv_label_set_text_fmt(label_thr_val, "Limit: %d Digits", thresholdVal); preferences.begin("catmat", false); preferences.putInt("thr", thresholdVal); preferences.end(); }
 static void slider_time_event_cb(lv_event_t * e) { playToneI2S(1000, 50, true); lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e); int val = lv_slider_get_value(slider); val = (val / 5) * 5; lv_slider_set_value(slider, val, LV_ANIM_OFF); graphTimeSeconds = val; lv_label_set_text_fmt(label_time_val, "Graph Dauer: %d s", graphTimeSeconds); requestChartUpdate = true; preferences.begin("catmat", false); preferences.putInt("gtime", graphTimeSeconds); preferences.end(); }
@@ -112,87 +111,23 @@ static void switch_time_x_event_cb(lv_event_t * e) { playToneI2S(800, 100, true)
 static void dd_graph_mode_event_cb(lv_event_t * e) { playToneI2S(800, 100, true); lv_obj_t * dropdown = (lv_obj_t *)lv_event_get_target(e); currentGraphMode = lv_dropdown_get_selected(dropdown); historyIdx = 0; historyCount = 0; for(int i=0; i<HISTORY_SIZE; i++) pressureHistory[i] = -32000; requestChartUpdate = true; preferences.begin("catmat", false); preferences.putInt("gMode", currentGraphMode); preferences.end(); }
 static void btn_tara_event_cb(lv_event_t * e) { playToneI2S(800, 100, true); taraOffset = rawPressure; preferences.begin("catmat", false); preferences.putUInt("off", taraOffset); preferences.end(); }
 static void switch_dark_event_cb(lv_event_t * e) { playToneI2S(800, 100, true); isDarkMode = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("dark", isDarkMode); preferences.end(); gui.switchScreen(SCREEN_DASHBOARD, LV_SCR_LOAD_ANIM_MOVE_BOTTOM); }
-
-static void slider_cam_ref_event_cb(lv_event_t * e) { 
-    playToneI2S(1000, 50, true);
-    lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e); 
-    int idx = lv_slider_get_value(slider); 
-    if (idx < 0) idx = 0; if (idx > 19) idx = 19; 
-    cameraRefreshMs = cam_intervals[idx]; 
-    
-    if (cameraRefreshMs < 1000) {
-        lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d ms", cameraRefreshMs); 
-    } else {
-        lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d Sek", cameraRefreshMs / 1000); 
-    }
-}
-static void slider_cam_ref_release_cb(lv_event_t * e) { 
-    preferences.begin("catmat", false); 
-    preferences.putInt("camRef", cameraRefreshMs); 
-    preferences.end(); 
-}
-
-static void slider_mjpeg_drop_event_cb(lv_event_t * e) {
-    playToneI2S(1000, 50, true);
-    lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e);
-    int val = lv_slider_get_value(slider);
-    mjpegDropThreshold = val * 1024; 
-    if (val == 0) lv_label_set_text(label_mjpeg_drop_val, "Latenz-Drop: Aggressiv (0 KB)");
-    else lv_label_set_text_fmt(label_mjpeg_drop_val, "Latenz-Drop: %d KB", val);
-}
-static void slider_mjpeg_drop_release_cb(lv_event_t * e) {
-    preferences.begin("catmat", false); 
-    preferences.putInt("mjDrop", mjpegDropThreshold); 
-    preferences.end();
-}
-
+static void slider_cam_ref_event_cb(lv_event_t * e) { playToneI2S(1000, 50, true); lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e); int idx = lv_slider_get_value(slider); if (idx < 0) idx = 0; if (idx > 19) idx = 19; cameraRefreshMs = cam_intervals[idx]; if (cameraRefreshMs < 1000) { lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d ms", cameraRefreshMs); } else { lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d Sek", cameraRefreshMs / 1000); } }
+static void slider_cam_ref_release_cb(lv_event_t * e) { preferences.begin("catmat", false); preferences.putInt("camRef", cameraRefreshMs); preferences.end(); }
+static void slider_mjpeg_drop_event_cb(lv_event_t * e) { playToneI2S(1000, 50, true); lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e); int val = lv_slider_get_value(slider); mjpegDropThreshold = val * 1024; if (val == 0) lv_label_set_text(label_mjpeg_drop_val, "Latenz-Drop: Aggressiv (0 KB)"); else lv_label_set_text_fmt(label_mjpeg_drop_val, "Latenz-Drop: %d KB", val); }
+static void slider_mjpeg_drop_release_cb(lv_event_t * e) { preferences.begin("catmat", false); preferences.putInt("mjDrop", mjpegDropThreshold); preferences.end(); }
 static void sw_wifi_cb(lv_event_t * e) { playToneI2S(800, 100, true); wifiEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("wifiEn", wifiEnabled); preferences.end(); calcMultiplex(); update_sliders_ui(); }
 static void sw_mqtt_cb(lv_event_t * e) { playToneI2S(800, 100, true); mqttEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("mqttEn", mqttEnabled); preferences.end(); }
 static void sw_mat_cb(lv_event_t * e) { playToneI2S(800, 100, true); matEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("matEn", matEnabled); preferences.end(); calcMultiplex(); update_sliders_ui(); }
 static void sw_kippy_cb(lv_event_t * e) { playToneI2S(800, 100, true); kippyEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("kipEn", kippyEnabled); preferences.end(); calcMultiplex(); update_sliders_ui(); }
-static void sl_master_cb(lv_event_t * e) { playToneI2S(1000, 50, true); prioMaster = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); preferences.begin("catmat", false); preferences.putInt("prioM", prioMaster); preferences.end(); calcMultiplex(); }
-static void sl_slave_cb(lv_event_t * e) { playToneI2S(1000, 50, true); prioSlave = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); preferences.begin("catmat", false); preferences.putInt("prioS", prioSlave); preferences.end(); calcMultiplex(); }
+static void sl_master_cb(lv_event_t * e) { playToneI2S(1000, 50, true); prioMaster = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); lv_label_set_text_fmt(lbl_master, "Prio Matte: %d%%", prioMaster); preferences.begin("catmat", false); preferences.putInt("prioM", prioMaster); preferences.end(); calcMultiplex(); }
+static void sl_slave_cb(lv_event_t * e) { playToneI2S(1000, 50, true); prioSlave = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e)); lv_label_set_text_fmt(lbl_slave, "Split Kippy/WLAN: %d%%", prioSlave); preferences.begin("catmat", false); preferences.putInt("prioS", prioSlave); preferences.end(); calcMultiplex(); }
 
-static void btn_scan_mat_cb(lv_event_t * e) {
-    playToneI2S(800, 100, true);
-    if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { scanResultCount = 0; strcpy(scanOptionsStr, "Suche laeuft..."); xSemaphoreGive(bleMutex); }
-    requestRollerUpdate = true; setupScanStartTime = millis(); isSetupScanning = true; setupScanMode = 1; scanJustFinished = false;
-    lv_label_set_text(lbl_scan_info, "Suche Matte..."); lv_obj_clear_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(scan_overlay); 
-}
-static void btn_scan_kip_cb(lv_event_t * e) {
-    playToneI2S(800, 100, true);
-    if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { scanResultCount = 0; strcpy(scanOptionsStr, "Suche laeuft..."); xSemaphoreGive(bleMutex); }
-    requestRollerUpdate = true; setupScanStartTime = millis(); isSetupScanning = true; setupScanMode = 2; scanJustFinished = false;
-    lv_label_set_text(lbl_scan_info, "Suche Tracker..."); lv_obj_clear_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(scan_overlay);
-}
-
-static void btn_rescan_mac_cb(lv_event_t * e) {
-    playToneI2S(800, 100, true);
-    if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { scanResultCount = 0; strcpy(scanOptionsStr, "Suche laeuft..."); xSemaphoreGive(bleMutex); }
-    requestRollerUpdate = true; setupScanStartTime = millis(); isSetupScanning = true; scanJustFinished = false;
-}
-static void btn_continue_mac_cb(lv_event_t * e) {
-    playToneI2S(800, 100, true);
-    if (!isSetupScanning) { setupScanStartTime = millis(); isSetupScanning = true; scanJustFinished = false; }
-}
-static void btn_cancel_mac_cb(lv_event_t * e) {
-    playToneI2S(600, 100, true);
-    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); isSetupScanning = false; setupScanMode = 0; scanJustFinished = false;
-    pendingRadarTeardown = true;
-}
-static void btn_save_mac_cb(lv_event_t * e) {
-    playToneI2S(800, 100, true);
-    uint16_t idx = lv_roller_get_selected(dd_scan_results);
-    if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        if (idx < scanResultCount) {
-            if (setupScanMode == 1) { savedMatMac = scanResultMacs[idx]; preferences.begin("catmat", false); preferences.putString("macM", savedMatMac); preferences.end(); } 
-            else if (setupScanMode == 2) { savedKippyMac = scanResultMacs[idx]; preferences.begin("catmat", false); preferences.putString("macK", savedKippyMac); preferences.end(); }
-        }
-        xSemaphoreGive(bleMutex);
-    }
-    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); isSetupScanning = false; setupScanMode = 0; scanJustFinished = false;
-    pendingRadarTeardown = true; 
-}
+static void btn_scan_mat_cb(lv_event_t * e) { playToneI2S(800, 100, true); if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { scanResultCount = 0; strcpy(scanOptionsStr, "Suche laeuft..."); xSemaphoreGive(bleMutex); } requestRollerUpdate = true; setupScanStartTime = millis(); isSetupScanning = true; setupScanMode = 1; scanJustFinished = false; lv_label_set_text(lbl_scan_info, "Suche Matte..."); lv_obj_clear_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(scan_overlay); }
+static void btn_scan_kip_cb(lv_event_t * e) { playToneI2S(800, 100, true); if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { scanResultCount = 0; strcpy(scanOptionsStr, "Suche laeuft..."); xSemaphoreGive(bleMutex); } requestRollerUpdate = true; setupScanStartTime = millis(); isSetupScanning = true; setupScanMode = 2; scanJustFinished = false; lv_label_set_text(lbl_scan_info, "Suche Tracker..."); lv_obj_clear_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(scan_overlay); }
+static void btn_rescan_mac_cb(lv_event_t * e) { playToneI2S(800, 100, true); if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { scanResultCount = 0; strcpy(scanOptionsStr, "Suche laeuft..."); xSemaphoreGive(bleMutex); } requestRollerUpdate = true; setupScanStartTime = millis(); isSetupScanning = true; scanJustFinished = false; }
+static void btn_continue_mac_cb(lv_event_t * e) { playToneI2S(800, 100, true); if (!isSetupScanning) { setupScanStartTime = millis(); isSetupScanning = true; scanJustFinished = false; } }
+static void btn_cancel_mac_cb(lv_event_t * e) { playToneI2S(600, 100, true); lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); isSetupScanning = false; setupScanMode = 0; scanJustFinished = false; pendingRadarTeardown = true; }
+static void btn_save_mac_cb(lv_event_t * e) { playToneI2S(800, 100, true); uint16_t idx = lv_roller_get_selected(dd_scan_results); if (bleMutex != NULL && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) { if (idx < scanResultCount) { if (setupScanMode == 1) { savedMatMac = scanResultMacs[idx]; preferences.begin("catmat", false); preferences.putString("macM", savedMatMac); preferences.end(); } else if (setupScanMode == 2) { savedKippyMac = scanResultMacs[idx]; preferences.begin("catmat", false); preferences.putString("macK", savedKippyMac); preferences.end(); } } xSemaphoreGive(bleMutex); } lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN); isSetupScanning = false; setupScanMode = 0; scanJustFinished = false; pendingRadarTeardown = true; }
 
 lv_obj_t* ViewSettings::build() {
     lv_obj_t* scr = lv_obj_create(NULL);
@@ -221,82 +156,26 @@ lv_obj_t* ViewSettings::build() {
 
     create_header(scroll_cont, LV_SYMBOL_VIDEO " BABY-MONITOR & AUDIO");
     label_cam_ref_val = create_text_label(scroll_cont, ""); 
-    if (cameraRefreshMs < 1000) lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d ms", cameraRefreshMs);
-    else lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d Sek", cameraRefreshMs / 1000);
+    if (cameraRefreshMs < 1000) lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d ms", cameraRefreshMs); else lv_label_set_text_fmt(label_cam_ref_val, "Update Intervall: %d Sek", cameraRefreshMs / 1000);
     int start_idx = 10; for (int i=0; i<20; i++) { if (cameraRefreshMs <= cam_intervals[i]) { start_idx = i; break; } }
     lv_obj_t * slider_cam_ref = lv_slider_create(scroll_cont); lv_obj_set_size(slider_cam_ref, 200, 10); lv_slider_set_range(slider_cam_ref, 0, 19); lv_slider_set_value(slider_cam_ref, start_idx, LV_ANIM_OFF); lv_obj_add_event_cb(slider_cam_ref, slider_cam_ref_event_cb, LV_EVENT_VALUE_CHANGED, NULL); lv_obj_add_event_cb(slider_cam_ref, slider_cam_ref_release_cb, LV_EVENT_RELEASED, NULL);
 
     label_mjpeg_drop_val = create_text_label(scroll_cont, "");
-    if (mjpegDropThreshold == 0) lv_label_set_text(label_mjpeg_drop_val, "Latenz-Drop: Aggressiv (0 KB)");
-    else lv_label_set_text_fmt(label_mjpeg_drop_val, "Latenz-Drop: %d KB", mjpegDropThreshold / 1024);
-    
-    lv_obj_t * slider_mjpeg_drop = lv_slider_create(scroll_cont); 
-    lv_obj_set_size(slider_mjpeg_drop, 200, 10); 
-    lv_slider_set_range(slider_mjpeg_drop, 0, 16); 
-    lv_slider_set_value(slider_mjpeg_drop, mjpegDropThreshold / 1024, LV_ANIM_OFF); 
-    lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_event_cb, LV_EVENT_VALUE_CHANGED, NULL); 
-    lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_release_cb, LV_EVENT_RELEASED, NULL);
+    if (mjpegDropThreshold == 0) lv_label_set_text(label_mjpeg_drop_val, "Latenz-Drop: Aggressiv (0 KB)"); else lv_label_set_text_fmt(label_mjpeg_drop_val, "Latenz-Drop: %d KB", mjpegDropThreshold / 1024);
+    lv_obj_t * slider_mjpeg_drop = lv_slider_create(scroll_cont); lv_obj_set_size(slider_mjpeg_drop, 200, 10); lv_slider_set_range(slider_mjpeg_drop, 0, 16); lv_slider_set_value(slider_mjpeg_drop, mjpegDropThreshold / 1024, LV_ANIM_OFF); lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_event_cb, LV_EVENT_VALUE_CHANGED, NULL); lv_obj_add_event_cb(slider_mjpeg_drop, slider_mjpeg_drop_release_cb, LV_EVENT_RELEASED, NULL);
 
-    // Audio Format Schalter
-    lv_obj_t * cont_audio_fmt = create_helper_cont(scroll_cont, 40);
-    lv_obj_t * label_audio_fmt = create_text_label(cont_audio_fmt, "Audio: PCM (WAV)");
-    lv_obj_align(label_audio_fmt, LV_ALIGN_LEFT_MID, 10, 0);
-    lv_obj_t * switch_audio_fmt = lv_switch_create(cont_audio_fmt);
-    lv_obj_align(switch_audio_fmt, LV_ALIGN_RIGHT_MID, -10, 0);
-    if(usePcmAudio) lv_obj_add_state(switch_audio_fmt, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(switch_audio_fmt, [](lv_event_t* e) {
-        playToneI2S(800, 100, true);
-        usePcmAudio = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
-        Preferences prefs; prefs.begin("catmat", false);
-        prefs.putBool("usePcm", usePcmAudio);
-        prefs.end();
-    }, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t * cont_audio_fmt = create_helper_cont(scroll_cont, 40); lv_obj_t * label_audio_fmt = create_text_label(cont_audio_fmt, "Audio: PCM (WAV)"); lv_obj_align(label_audio_fmt, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * switch_audio_fmt = lv_switch_create(cont_audio_fmt); lv_obj_align(switch_audio_fmt, LV_ALIGN_RIGHT_MID, -10, 0); if(usePcmAudio) lv_obj_add_state(switch_audio_fmt, LV_STATE_CHECKED); lv_obj_add_event_cb(switch_audio_fmt, [](lv_event_t* e) { playToneI2S(800, 100, true); usePcmAudio = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); Preferences prefs; prefs.begin("catmat", false); prefs.putBool("usePcm", usePcmAudio); prefs.end(); }, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // --- NEU: Der Hardware-Schalter fuer den Kamera Hack ---
-    lv_obj_t * cont_cam_hack = create_helper_cont(scroll_cont, 40);
-    lv_obj_t * label_cam_hack = create_text_label(cont_cam_hack, "Kamera API Hack (320x240)");
-    lv_obj_align(label_cam_hack, LV_ALIGN_LEFT_MID, 10, 0);
-    lv_obj_t * switch_cam_hack = lv_switch_create(cont_cam_hack);
-    lv_obj_align(switch_cam_hack, LV_ALIGN_RIGHT_MID, -10, 0);
-    if(useBabyCamHack) lv_obj_add_state(switch_cam_hack, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(switch_cam_hack, [](lv_event_t* e) {
-        playToneI2S(800, 100, true);
-        useBabyCamHack = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
-        Preferences prefs; prefs.begin("catmat", false);
-        prefs.putBool("camHack", useBabyCamHack);
-        prefs.end();
-    }, LV_EVENT_VALUE_CHANGED, NULL);
-    // -------------------------------------------------------
+    create_text_label(scroll_cont, "Kamera Aufloesung (Hack):"); 
+    lv_obj_t * dd_cam_hack = lv_dropdown_create(scroll_cont); lv_obj_set_width(dd_cam_hack, 200); 
+    lv_dropdown_set_options(dd_cam_hack, "0: Deaktiviert\n1: 320x240\n2: 480x360 (16:9)\n3: 640x360\n4: 640x480\n5: 800x450\n6: 800x600\n7: 1024x768\n8: 1280x720 (HD)\n9: 1280x960");
+    lv_dropdown_set_selected(dd_cam_hack, camHackMode); 
+    lv_obj_add_event_cb(dd_cam_hack, [](lv_event_t* e){ playToneI2S(800, 100, true); camHackMode = lv_dropdown_get_selected((lv_obj_t*)lv_event_get_target(e)); Preferences prefs; prefs.begin("catmat", false); prefs.putInt("camHackM", camHackMode); prefs.end(); }, LV_EVENT_VALUE_CHANGED, NULL);
 
     create_header(scroll_cont, LV_SYMBOL_LIST " SYSTEM & BLE");
     
-    lv_obj_t * cont_ad = create_helper_cont(scroll_cont, 40); 
-    lv_obj_t * label_ad = create_text_label(cont_ad, "Audio Debug Overlay"); 
-    lv_obj_align(label_ad, LV_ALIGN_LEFT_MID, 10, 0); 
-    lv_obj_t * switch_ad = lv_switch_create(cont_ad); 
-    lv_obj_align(switch_ad, LV_ALIGN_RIGHT_MID, -10, 0); 
-    if(audioDebugEnabled) lv_obj_add_state(switch_ad, LV_STATE_CHECKED); 
-    lv_obj_add_event_cb(switch_ad, [](lv_event_t* e){
-        playToneI2S(800, 100, true);
-        audioDebugEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
-        preferences.begin("catmat", false); preferences.putBool("audDbg", audioDebugEnabled); preferences.end();
-    }, LV_EVENT_VALUE_CHANGED, NULL);
-
-    lv_obj_t * cont_fps = create_helper_cont(scroll_cont, 40);
-    lv_obj_t * lbl_fps_title = create_text_label(cont_fps, "Video FPS Anzeige");
-    lv_obj_align(lbl_fps_title, LV_ALIGN_LEFT_MID, 10, 0);
-    lv_obj_t * sw_fps = lv_switch_create(cont_fps);
-    lv_obj_align(sw_fps, LV_ALIGN_RIGHT_MID, -10, 0);
-    if(showFps) lv_obj_add_state(sw_fps, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(sw_fps, [](lv_event_t* e) {
-        lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
-        showFps = lv_obj_has_state(sw, LV_STATE_CHECKED);
-        Preferences prefs; prefs.begin("catmat", false); 
-        prefs.putBool("showFps", showFps); 
-        prefs.end();
-        playToneI2S(800, 100, true); 
-    }, LV_EVENT_VALUE_CHANGED, NULL);
-
+    lv_obj_t * cont_ad = create_helper_cont(scroll_cont, 40); lv_obj_t * label_ad = create_text_label(cont_ad, "Audio Debug Overlay"); lv_obj_align(label_ad, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * switch_ad = lv_switch_create(cont_ad); lv_obj_align(switch_ad, LV_ALIGN_RIGHT_MID, -10, 0); if(audioDebugEnabled) lv_obj_add_state(switch_ad, LV_STATE_CHECKED); lv_obj_add_event_cb(switch_ad, [](lv_event_t* e){ playToneI2S(800, 100, true); audioDebugEnabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); preferences.begin("catmat", false); preferences.putBool("audDbg", audioDebugEnabled); preferences.end(); }, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t * cont_fps = create_helper_cont(scroll_cont, 40); lv_obj_t * lbl_fps_title = create_text_label(cont_fps, "Video FPS Anzeige"); lv_obj_align(lbl_fps_title, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * sw_fps = lv_switch_create(cont_fps); lv_obj_align(sw_fps, LV_ALIGN_RIGHT_MID, -10, 0); if(showFps) lv_obj_add_state(sw_fps, LV_STATE_CHECKED); lv_obj_add_event_cb(sw_fps, [](lv_event_t* e) { lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e); showFps = lv_obj_has_state(sw, LV_STATE_CHECKED); Preferences prefs; prefs.begin("catmat", false); prefs.putBool("showFps", showFps); prefs.end(); playToneI2S(800, 100, true); }, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_t * cont_dm = create_helper_cont(scroll_cont, 40); lv_obj_t * label_dark = create_text_label(cont_dm, "Dark Mode"); lv_obj_align(label_dark, LV_ALIGN_LEFT_MID, 10, 0); lv_obj_t * switch_dark = lv_switch_create(cont_dm); lv_obj_align(switch_dark, LV_ALIGN_RIGHT_MID, -10, 0); if(isDarkMode) lv_obj_add_state(switch_dark, LV_STATE_CHECKED); lv_obj_add_event_cb(switch_dark, switch_dark_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     create_header(scroll_cont, LV_SYMBOL_WIFI " FUNKVERBINDUNGEN");
@@ -307,8 +186,8 @@ lv_obj_t* ViewSettings::build() {
     lbl_master = create_text_label(scroll_cont, ""); lv_label_set_text_fmt(lbl_master, "Prio Matte: %d%%", prioMaster); sl_master = lv_slider_create(scroll_cont); lv_obj_set_size(sl_master, 200, 10); lv_slider_set_range(sl_master, 0, 100); lv_slider_set_value(sl_master, prioMaster, LV_ANIM_OFF); lv_obj_add_event_cb(sl_master, sl_master_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lbl_slave = create_text_label(scroll_cont, ""); lv_label_set_text_fmt(lbl_slave, "Split Kippy/WLAN: %d%%", prioSlave); sl_slave = lv_slider_create(scroll_cont); lv_obj_set_size(sl_slave, 200, 10); lv_slider_set_range(sl_slave, 0, 100); lv_slider_set_value(sl_slave, prioSlave, LV_ANIM_OFF); lv_obj_add_event_cb(sl_slave, sl_slave_cb, LV_EVENT_VALUE_CHANGED, NULL); update_sliders_ui();
 
-    lv_obj_t * btn_ap_setup = lv_btn_create(scroll_cont); lv_obj_set_size(btn_ap_setup, 200, 40); lv_obj_set_style_bg_color(btn_ap_setup, lv_color_hex(0x00A0FF), 0); lv_obj_add_event_cb(btn_ap_setup, btn_ap_setup_cb, LV_EVENT_CLICKED, NULL); lv_obj_t * l_ap = create_white_label(btn_ap_setup, "Setup: WLAN & MQTT"); lv_obj_center(l_ap);
-    lv_obj_t * btn_sta_setup = lv_btn_create(scroll_cont); lv_obj_set_size(btn_sta_setup, 200, 40); lv_obj_set_style_bg_color(btn_sta_setup, lv_color_hex(0x00A0FF), 0); lv_obj_add_event_cb(btn_sta_setup, btn_sta_setup_cb, LV_EVENT_CLICKED, NULL); lv_obj_t * l_sta = create_white_label(btn_sta_setup, "Setup: Nur MQTT"); lv_obj_center(l_sta);
+    lv_obj_t * btn_ap_setup = lv_btn_create(scroll_cont); lv_obj_set_size(btn_ap_setup, 230, 40); lv_obj_set_style_bg_color(btn_ap_setup, lv_color_hex(0x00A0FF), 0); lv_obj_add_event_cb(btn_ap_setup, btn_ap_setup_cb, LV_EVENT_CLICKED, NULL); lv_obj_t * l_ap = create_white_label(btn_ap_setup, "Setup (WLAN, System, Cam)"); lv_obj_center(l_ap);
+    lv_obj_t * btn_sta_setup = lv_btn_create(scroll_cont); lv_obj_set_size(btn_sta_setup, 230, 40); lv_obj_set_style_bg_color(btn_sta_setup, lv_color_hex(0x00A0FF), 0); lv_obj_add_event_cb(btn_sta_setup, btn_sta_setup_cb, LV_EVENT_CLICKED, NULL); lv_obj_t * l_sta = create_white_label(btn_sta_setup, "Setup (System, MQTT, Cam)"); lv_obj_center(l_sta);
     
     create_header(scroll_cont, LV_SYMBOL_SETTINGS " GERAETE SETUP");
     lv_obj_t * cont_mac1 = create_helper_cont(scroll_cont, 60); lbl_setup_mat = create_text_label(cont_mac1, ""); lv_obj_set_width(lbl_setup_mat, 120); lv_label_set_text_fmt(lbl_setup_mat, "Matte:\n%s", savedMatMac.c_str()); lv_obj_align(lbl_setup_mat, LV_ALIGN_LEFT_MID, 5, 0);
@@ -326,7 +205,7 @@ lv_obj_t* ViewSettings::build() {
     text_sys_info = create_text_label(scroll_cont, "Lade System Daten..."); lv_label_set_long_mode(text_sys_info, LV_LABEL_LONG_WRAP); lv_obj_set_width(text_sys_info, 220);
     lv_obj_t * spacer = lv_obj_create(scroll_cont); lv_obj_set_size(spacer, 10, 40); lv_obj_set_style_bg_opa(spacer, 0, 0); lv_obj_set_style_border_width(spacer, 0, 0);
 
-    // QR CODE OVERLAY
+    // --- SCREENSHOT OVERLAY (Fix A: Platz optimiert) ---
     qr_overlay = lv_obj_create(scr); 
     lv_obj_set_size(qr_overlay, 280, 280); 
     lv_obj_center(qr_overlay); 
@@ -336,15 +215,17 @@ lv_obj_t* ViewSettings::build() {
     lv_obj_add_flag(qr_overlay, LV_OBJ_FLAG_HIDDEN); 
     
     qr_screenshot = lv_qrcode_create(qr_overlay); 
-    lv_qrcode_set_size(qr_screenshot, 130); 
+    lv_qrcode_set_size(qr_screenshot, 110); // QR etwas verkleinert fuer mehr Text-Platz
     lv_qrcode_set_dark_color(qr_screenshot, lv_color_hex(0x00A0FF)); 
     lv_qrcode_set_light_color(qr_screenshot, lv_color_hex(0x222222)); 
     lv_obj_set_style_border_width(qr_screenshot, 0, 0);
     lv_obj_set_style_pad_all(qr_screenshot, 0, 0);
-    lv_obj_align(qr_screenshot, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(qr_screenshot, LV_ALIGN_TOP_MID, 0, 5); // QR nach ganz oben geschoben
     
     lbl_qr_ip = lv_label_create(qr_overlay);
-    lv_obj_align_to(lbl_qr_ip, qr_screenshot, LV_ALIGN_OUT_BOTTOM_MID, 0, 15);
+    lv_obj_set_width(lbl_qr_ip, 240); 
+    lv_obj_set_style_text_align(lbl_qr_ip, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align_to(lbl_qr_ip, qr_screenshot, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
     lv_obj_set_style_text_color(lbl_qr_ip, lv_color_white(), 0);
     lv_label_set_text(lbl_qr_ip, "Link: ---");
 
@@ -356,7 +237,38 @@ lv_obj_t* ViewSettings::build() {
     lv_obj_t * l_stop = create_white_label(btn_stop_screenshot, LV_SYMBOL_STOP " Beenden"); 
     lv_obj_center(l_stop);
 
-    // SCAN OVERLAY
+    // --- SETUP OVERLAY (Fix A: Platz optimiert) ---
+    setup_overlay = lv_obj_create(scr); 
+    lv_obj_set_size(setup_overlay, 280, 280); 
+    lv_obj_center(setup_overlay); 
+    lv_obj_set_style_bg_color(setup_overlay, lv_color_hex(0x222222), 0); 
+    lv_obj_set_style_border_color(setup_overlay, lv_color_hex(0xFF8800), 0); 
+    lv_obj_set_style_border_width(setup_overlay, 2, 0); 
+    lv_obj_add_flag(setup_overlay, LV_OBJ_FLAG_HIDDEN); 
+    
+    setup_qr = lv_qrcode_create(setup_overlay); 
+    lv_qrcode_set_size(setup_qr, 110); // QR verkleinert
+    lv_qrcode_set_dark_color(setup_qr, lv_color_hex(0xFF8800)); 
+    lv_qrcode_set_light_color(setup_qr, lv_color_hex(0x222222)); 
+    lv_obj_set_style_border_width(setup_qr, 0, 0);
+    lv_obj_set_style_pad_all(setup_qr, 0, 0);
+    lv_obj_align(setup_qr, LV_ALIGN_TOP_MID, 0, 5); // QR nach ganz oben
+    
+    lbl_setup_qr = lv_label_create(setup_overlay);
+    lv_obj_set_width(lbl_setup_qr, 240); 
+    lv_obj_set_style_text_align(lbl_setup_qr, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align_to(lbl_setup_qr, setup_qr, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
+    lv_obj_set_style_text_color(lbl_setup_qr, lv_color_white(), 0);
+    lv_label_set_text(lbl_setup_qr, "---");
+
+    btn_cancel_setup = lv_btn_create(setup_overlay); 
+    lv_obj_set_size(btn_cancel_setup, 160, 40); 
+    lv_obj_align(btn_cancel_setup, LV_ALIGN_BOTTOM_MID, 0, -15); 
+    lv_obj_set_style_bg_color(btn_cancel_setup, lv_color_hex(0xAA0000), 0); 
+    lv_obj_add_event_cb(btn_cancel_setup, [](lv_event_t* e){ playToneI2S(600, 100, true); ESP.restart(); }, LV_EVENT_CLICKED, NULL); 
+    lv_obj_t * l_cancel_set = create_white_label(btn_cancel_setup, LV_SYMBOL_STOP " Abbrechen"); 
+    lv_obj_center(l_cancel_set);
+
     scan_overlay = lv_obj_create(scr); lv_obj_set_size(scan_overlay, lv_pct(100), lv_pct(100)); lv_obj_set_style_bg_color(scan_overlay, lv_color_hex(0x111111), 0); lv_obj_set_style_bg_opa(scan_overlay, 255, 0); lv_obj_set_style_border_width(scan_overlay, 0, 0); lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN);
     scan_spinner = lv_spinner_create(scan_overlay); lv_obj_set_size(scan_spinner, 24, 24); lv_obj_align(scan_spinner, LV_ALIGN_TOP_MID, -70, 15);
     lbl_scan_info = lv_label_create(scan_overlay); lv_label_set_text(lbl_scan_info, "Suche..."); lv_obj_set_style_text_color(lbl_scan_info, lv_color_white(), 0); lv_obj_align(lbl_scan_info, LV_ALIGN_TOP_MID, 25, 18);
@@ -371,6 +283,9 @@ lv_obj_t* ViewSettings::build() {
 
 void ViewSettings::update() {
     if (gui.getCurrentScreen() != SCREEN_SETTINGS) return;
+
+    // LEBENSRETTENDER KILL-SWITCH (Darf nicht entfernt werden!)
+    if (webSetupMode > 0 || pendingWebSetupMode > 0) return;
 
     if (!lv_obj_has_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN)) {
         if (isSetupScanning) {
@@ -400,9 +315,12 @@ void ViewSettings::update() {
         lastInfoUpdate = millis();
         static char bleInfoBuf[512];
         snprintf(bleInfoBuf, sizeof(bleInfoBuf), "Matte: %s (%d dBm)\nIntervall: %d ms\n\nKippy: %s\nSignal: %d dBm\n\nWLAN HA: %s", 
-            matEnabled ? (connected ? "Verbunden" : "Getrennt") : "Deaktiviert", connected ? (pClient ? pClient->getRssi() : 0) : 0, (int)avgInterval, 
+            matEnabled ? (connected ? "Verbunden" : "Getrennt") : "Deaktiviert", 
+            connected ? (pClient ? pClient->getRssi() : 0) : 0, 
+            (int)avgInterval, 
             kippyEnabled ? ((lastCatSeenTime == 0 || millis() - lastCatSeenTime > 30000) ? "Abwesend" : "Aktiv") : "Deaktiviert", 
-            (kippyEnabled && lastCatSeenTime != 0 && (millis() - lastCatSeenTime <= 30000)) ? catRssi : 0, wifiEnabled ? "Aktiv" : "Deaktiviert");
+            (kippyEnabled && lastCatSeenTime != 0 && (millis() - lastCatSeenTime <= 30000)) ? catRssi : 0, 
+            wifiEnabled ? "Aktiv" : "Deaktiviert");
         lv_label_set_text(text_ble_info, bleInfoBuf);
 
         uint32_t sec = (millis() - startTime) / 1000;

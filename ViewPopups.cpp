@@ -1,11 +1,6 @@
 #include "ViewPopups.h"
 #include "SharedData.h"
 #include "GuiManager.h"
-#include <WiFi.h>
-
-static lv_obj_t * web_setup_overlay = nullptr;
-static lv_obj_t * web_setup_qr = nullptr;
-static lv_obj_t * web_setup_lbl = nullptr;
 
 static lv_obj_t * dual_alarm_container = nullptr;
 static lv_obj_t * pnl_baby = nullptr;
@@ -13,35 +8,10 @@ static lv_obj_t * lbl_baby_alarm = nullptr;
 static lv_obj_t * pnl_cat = nullptr;
 static lv_obj_t * lbl_cat_alarm = nullptr;
 
-static void btn_web_cancel_cb(lv_event_t * e) { ESP.restart(); }
-
 void ViewPopups::init() {
-    if (web_setup_overlay != nullptr) return; 
+    if (dual_alarm_container != nullptr) return; 
 
     lv_obj_t * sys_layer = lv_layer_top();
-
-    // --- Web Setup Overlay ---
-    web_setup_overlay = lv_obj_create(sys_layer);
-    lv_obj_set_size(web_setup_overlay, 360, 360);
-    lv_obj_set_style_bg_color(web_setup_overlay, lv_color_black(), 0);
-    lv_obj_add_flag(web_setup_overlay, LV_OBJ_FLAG_HIDDEN);
-
-    web_setup_lbl = lv_label_create(web_setup_overlay);
-    lv_obj_set_style_text_color(web_setup_lbl, lv_color_white(), 0);
-    lv_obj_set_style_text_align(web_setup_lbl, LV_TEXT_ALIGN_CENTER, 0);
-
-    web_setup_qr = lv_qrcode_create(web_setup_overlay);
-    lv_qrcode_set_size(web_setup_qr, 160);
-    lv_qrcode_set_dark_color(web_setup_qr, lv_color_black());
-    lv_qrcode_set_light_color(web_setup_qr, lv_color_white());
-    lv_obj_align(web_setup_qr, LV_ALIGN_CENTER, 0, 10);
-
-    lv_obj_t * btn_cancel = lv_btn_create(web_setup_overlay);
-    lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_MID, 0, -20);
-    lv_obj_add_event_cb(btn_cancel, btn_web_cancel_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * lbl_c = lv_label_create(btn_cancel);
-    lv_label_set_text(lbl_c, "Abbrechen");
-    lv_obj_center(lbl_c);
 
     // --- Dual Alarm Container ---
     dual_alarm_container = lv_obj_create(sys_layer);
@@ -69,39 +39,12 @@ void ViewPopups::init() {
 }
 
 void ViewPopups::update() {
-    static bool webOverlayRendered = false;
-    if (webSetupMode > 0) {
-        if (!webOverlayRendered) {
-            lv_obj_clear_flag(web_setup_overlay, LV_OBJ_FLAG_HIDDEN);
-            if (webSetupMode == 1) {
-                lv_label_set_text_fmt(web_setup_lbl, "WLAN SETUP\nSSID: LolaCatMat-Setup\nPW: %s", apPassword.c_str());
-                lv_obj_align(web_setup_lbl, LV_ALIGN_TOP_MID, 0, 40); 
-                String qrData = "WIFI:S:LolaCatMat-Setup;T:WPA;P:" + apPassword + ";;";
-                lv_qrcode_update(web_setup_qr, qrData.c_str(), qrData.length());
-                lv_obj_clear_flag(web_setup_qr, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                String ipStr = WiFi.localIP().toString();
-                lv_label_set_text_fmt(web_setup_lbl, "MQTT SETUP AKTIV\n\nGehe zu:\nhttp://%s", ipStr.c_str());
-                lv_obj_align(web_setup_lbl, LV_ALIGN_TOP_MID, 0, 40); 
-                String qrData = "http://" + ipStr;
-                lv_qrcode_update(web_setup_qr, qrData.c_str(), qrData.length());
-                lv_obj_clear_flag(web_setup_qr, LV_OBJ_FLAG_HIDDEN);
-            }
-            webOverlayRendered = true; 
-        }
-        return; 
-    } else {
-        lv_obj_add_flag(web_setup_overlay, LV_OBJ_FLAG_HIDDEN);
-        webOverlayRendered = false;
-    }
-
     // --- Alarm Cross-Logic ---
     bool catNeedsPopup = (alarmActive && !muted);
     bool babyNeedsPopup = (babyAlarmActive && !babyMuted);
     
     ScreenID scr = gui.getCurrentScreen();
     
-    // Auf dem Dashboard gibt es KEINE Overlays!
     if (scr == SCREEN_DASHBOARD) {
         lv_obj_add_flag(dual_alarm_container, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -114,9 +57,9 @@ void ViewPopups::update() {
         showCat = catNeedsPopup;
         showBaby = babyNeedsPopup;
     } else if (scr == SCREEN_BABY) {
-        showCat = catNeedsPopup; // Katze überlagert Baby
+        showCat = catNeedsPopup; 
     } else if (scr == SCREEN_CATMAT) {
-        showBaby = babyNeedsPopup; // Baby überlagert Katze
+        showBaby = babyNeedsPopup; 
     }
 
     if (!showCat && !showBaby) {
@@ -128,7 +71,6 @@ void ViewPopups::update() {
     bool fastBlink = (millis() % 600 < 300);
 
     if (showCat && showBaby) {
-        // Horizontal geteiltes Overlay!
         lv_obj_clear_flag(pnl_baby, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(pnl_cat, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(pnl_baby, 360, 180);
@@ -136,13 +78,11 @@ void ViewPopups::update() {
         lv_obj_set_size(pnl_cat, 360, 180);
         lv_obj_align(pnl_cat, LV_ALIGN_BOTTOM_MID, 0, 0);
     } else if (showBaby) {
-        // Nur Baby maximiert
         lv_obj_clear_flag(pnl_baby, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(pnl_cat, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(pnl_baby, 360, 360);
         lv_obj_align(pnl_baby, LV_ALIGN_CENTER, 0, 0);
     } else if (showCat) {
-        // Nur Katze maximiert
         lv_obj_add_flag(pnl_baby, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(pnl_cat, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(pnl_cat, 360, 360);

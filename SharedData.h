@@ -178,7 +178,10 @@ extern volatile int currentFps;
 
 extern int mjpegDropThreshold; 
 extern bool usePcmAudio; 
-extern bool useBabyCamHack; 
+
+// --- NEUE VARIABLEN FUER DEN DYNAMISCHEN HACK & MULTIPLEXING ---
+extern int camHackMode; 
+extern volatile bool isStreamActive;
 
 void Data_Init();
 void Audio_Init();

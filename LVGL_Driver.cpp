@@ -37,7 +37,7 @@ bool lvgl_port_lock(uint32_t timeout_ms) {
     if(xSemaphoreTakeRecursive(lvgl_mutex, timeout_ticks) == pdTRUE) {
         return true;
     } else {
-        Serial.println("LVGL lock timeout!");
+        // Serial.println("LVGL lock timeout!"); // Auskommentiert, um Spam in der Konsole zu vermeiden
         return false;
     }
 }
@@ -84,13 +84,22 @@ void LVGL_Loop(void *parameter)
 {
     while(1)
     {
-      lvgl_port_lock(0);
-      
-      if (!vidFSMode) {
+      // --- OPTIMIERUNG 2: LVGL IM FULLSCREEN EINFRIEREN ---
+      // Wenn das Video läuft, schläft die GUI tief und fest.
+      // Spart massiv CPU auf Core 1 und hält den SPI-Bus exklusiv fürs Video frei!
+      if (vidFSMode) {
+          vTaskDelay(pdMS_TO_TICKS(50));
+          continue; 
+      }
+      // ----------------------------------------------------
+
+      // BUGFIX: Wir müssen prüfen, ob wir den Lock wirklich bekommen haben,
+      // bevor wir lv_timer_handler() ausführen und den Mutex wieder entsperren!
+      if (lvgl_port_lock(50)) {
           lv_timer_handler(); 
+          lvgl_port_unlock();
       }
       
-      lvgl_port_unlock();
       vTaskDelay(pdMS_TO_TICKS(10));
     }
     vTaskDelete(NULL);
@@ -125,5 +134,6 @@ void Lvgl_Init(void)
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
+  // LVGL Task läuft auf Core 0 mit Prio 4
   xTaskCreatePinnedToCore(LVGL_Loop, "LVGL Loop", 16384, NULL, 4, NULL, 0);
 }
